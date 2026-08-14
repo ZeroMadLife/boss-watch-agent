@@ -1,0 +1,29 @@
+{
+  "name": "boss-watch-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Approval-gated BOSS job and conversation watch agent built on Pi Agent.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run typecheck && npm run lint",
+    "demo": "npm run build && node dist/demo.js",
+    "lint": "biome check src test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.1",
+    "@earendil-works/pi-ai": "0.84.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.5",
+    "@types/node": "24.12.4",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9"
+  }
+}

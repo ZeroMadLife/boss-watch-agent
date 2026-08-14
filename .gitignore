@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env*
+.pi/
+.playwright-cli/
+output/
+tmp/
+*.log
+.DS_Store

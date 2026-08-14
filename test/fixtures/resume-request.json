@@ -1,0 +1,19 @@
+{
+  "conversationId": "conversation-demo-001",
+  "candidateId": "candidate-demo-001",
+  "recruiterId": "recruiter-demo-001",
+  "messages": [
+    {
+      "id": "message-demo-001",
+      "actor": "candidate",
+      "text": "您好，我对 Agent 应用开发岗位很感兴趣。",
+      "sentAt": "2026-08-14T01:00:00.000Z"
+    },
+    {
+      "id": "message-demo-002",
+      "actor": "recruiter",
+      "text": "你好，可以先发一份简历给我吗？",
+      "sentAt": "2026-08-14T01:01:00.000Z"
+    }
+  ]
+}
