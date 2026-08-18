@@ -40,6 +40,8 @@ jobs:
           git -C "$DSH_SOURCE_DIR" checkout --detach FETCH_HEAD
       - name: Install DeepSeek Harness dependencies
         run: corepack pnpm@11.7.0 --dir "${RUNNER_WORKSPACE}/deepseek-harness" install --frozen-lockfile
+      - name: Build DeepSeek Harness libraries
+        run: corepack pnpm@11.7.0 --dir "${RUNNER_WORKSPACE}/deepseek-harness" run build:lib
       - name: Install plugin dependencies
         run: corepack pnpm@11.7.0 --dir packages/dsh-plugin install --frozen-lockfile
       - run: corepack pnpm@11.7.0 --dir packages/dsh-plugin test
