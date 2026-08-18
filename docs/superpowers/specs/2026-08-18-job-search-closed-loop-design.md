@@ -2,7 +2,7 @@
 
 日期：2026-08-18
 
-状态：设计已确认并进入分片交付；当前实现边界以 `docs/job-search-agent-spec.md` v0.18 为准
+状态：设计已确认并进入分片交付；当前实现边界以 `docs/job-search-agent-spec.md` v0.20 为准
 
 适用仓库：`boss-watch-agent`
 
@@ -209,6 +209,10 @@ InterviewRecord
 ## 6. 端到端流程
 
 ### 6.1 信源进入候选池
+
+新用户或新会话先调用只读 `boss_watch_workspace_overview`，根据本地简历、候选、核验和完整 JD 状态选择
+一条来源路径。overview 不刷新任何来源；GankInterview、BOSS 当前页、文件、剪贴板和截图均由用户明确选择后
+单独触发。
 
 ```text
 来源读取
@@ -517,6 +521,7 @@ handoff_required
 ### 已实现并验证
 
 - 本地 SQLite 事件和 Application read model；
+- 从零开始的 workspace overview、精确计数和单来源路由；
 - BOSS 可见列表发现与指定详情捕获；
 - GankInterview 请求时快照和观察历史；
 - CSV/XLSX、剪贴板和截图视觉岗位导入；
@@ -563,3 +568,4 @@ handoff_required
 - 批量投递按岗位串行，每项独立 Gate B；
 - 公司分类保存证据与置信边界；
 - 具体 JD 评分、草稿模板和官网表单适配器在后续切片单独制定。
+- Hosted Job Source API 是个人闭环稳定后的独立产品化层；只提供公共 `JobLead`，不持有用户私有事实；计费单位和价格暂未决定。

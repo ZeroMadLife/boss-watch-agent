@@ -42,6 +42,17 @@ export class SqliteBossWatchDataSource implements BossWatchDataSource {
     this.#databasePath = databasePath
   }
 
+  async countJobs(): Promise<number> {
+    return this.#withDatabase((database) => {
+      const row = database.prepare(`
+        SELECT COUNT(DISTINCT application_id) AS count
+        FROM application_events
+        WHERE event_type = 'job_description_captured'
+      `).get() as unknown as { count: number }
+      return row.count
+    })
+  }
+
   async listJobs(limit: number): Promise<JobSummary[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('invalid_job_limit')
     return this.#withDatabase((database) => {

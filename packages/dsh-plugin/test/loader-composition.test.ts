@@ -104,6 +104,7 @@ test('registers read-only tools through a real Cordis Loader composition', async
       'boss_watch_watch_resume',
       'boss_watch_watch_run_due',
       'boss_watch_watch_stop',
+      'boss_watch_workspace_overview',
     ])
     assert.deepEqual(
       context.tools.schemas().find(schema => schema.name === 'boss_watch_application_list')?.parameters,
@@ -111,6 +112,7 @@ test('registers read-only tools through a real Cordis Loader composition', async
     )
     assert.deepEqual((await context.skills.list()).map(skill => skill.name), ['boss-watch-job-search'])
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_job_list/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_workspace_overview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_discover_jobs/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_capture_discovered_job/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_capture_current_job/u)
@@ -144,6 +146,17 @@ test('registers read-only tools through a real Cordis Loader composition', async
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /不得自动轮询/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /单次最多 5 个/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /salaryStatus.*obfuscated.*不得猜测/u)
+    const workspaceResult = await context.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('workspace-overview'),
+      name: 'boss_watch_workspace_overview',
+      arguments: {},
+    })
+    assert.equal(workspaceResult.isError, false)
+    assert.match(
+      workspaceResult.content.map(block => block.type === 'text' ? block.text : '').join(''),
+      /local_runtime_setup/u,
+    )
     const result = await context.tools.execute({
       signal: new AbortController().signal,
       callId: CallId('missing-source'),

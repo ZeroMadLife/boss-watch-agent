@@ -23,6 +23,7 @@ import { LocalResumeMatchingService } from './resume-matching.js'
 import { registerBossWatchTools } from './tools.js'
 import { SqliteBossWatchDataSource } from './sqlite-source.js'
 import { registerBossWatchSkill } from './skill.js'
+import { LocalWorkspaceOverviewService } from './workspace-overview.js'
 
 export const name = 'boss-watch-dsh-plugin'
 export const inject = ['tools', 'skills']
@@ -41,16 +42,17 @@ interface AttachmentReader {
 export function apply(ctx: Context): void {
   const databasePath = process.env.BOSS_WATCH_DB_PATH
     ?? join(homedir(), 'Library', 'Application Support', 'BossWatchAgent', 'boss-watch.sqlite3')
+  const databaseReady = existsSync(databasePath)
   const source = new SqliteBossWatchDataSource(databasePath)
   const browser = new LocalBossWatchBrowserController()
   const interviewNoteClient = new LocalInterviewNoteClient()
   const progressSignalClient = new LocalProgressSignalClient()
-  const leadStore = existsSync(databasePath) ? new SqliteJobLeadStore(databasePath) : undefined
-  const batchStore = existsSync(databasePath) ? new SqliteBatchApplicationStore(databasePath) : undefined
-  const followUpStore = existsSync(databasePath) ? new SqliteFollowUpStore(databasePath) : undefined
-  const feishuStore = existsSync(databasePath) ? new SqliteFeishuTargetStore(databasePath) : undefined
-  const jobWatchStore = existsSync(databasePath) ? new SqliteJobWatchStore(databasePath) : undefined
-  const resumeStore = existsSync(databasePath) ? new SqliteResumeVersionStore(databasePath) : undefined
+  const leadStore = databaseReady ? new SqliteJobLeadStore(databasePath) : undefined
+  const batchStore = databaseReady ? new SqliteBatchApplicationStore(databasePath) : undefined
+  const followUpStore = databaseReady ? new SqliteFollowUpStore(databasePath) : undefined
+  const feishuStore = databaseReady ? new SqliteFeishuTargetStore(databasePath) : undefined
+  const jobWatchStore = databaseReady ? new SqliteJobWatchStore(databasePath) : undefined
+  const resumeStore = databaseReady ? new SqliteResumeVersionStore(databasePath) : undefined
   const jobWatch = jobWatchStore === undefined
     ? undefined
     : new LocalJobWatchService({ source, browser, store: jobWatchStore })
@@ -120,9 +122,23 @@ export function apply(ctx: Context): void {
         store: feishuStore,
         source,
       })
+  const workspaceOverview = new LocalWorkspaceOverviewService({
+    source,
+    databaseReady,
+    ...leadStore === undefined ? {} : { leads: leadStore },
+    ...resumeStore === undefined ? {} : { resumes: resumeStore },
+    ...feishuStore === undefined ? {} : { feishuTargets: feishuStore },
+    sourceAvailability: {
+      gankInterview: gankToken !== undefined && gankToken.length > 0,
+      bossVisible: true,
+      fileImport: importService !== undefined,
+      clipboardImport: clipboardImportService !== undefined,
+      visualImport: visualImportService !== undefined,
+    },
+  })
   ctx.effect(
     () => {
-      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient)
+      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview)
       const disposeSkill = registerBossWatchSkill(ctx)
       return () => {
         disposeSkill()
@@ -157,6 +173,7 @@ export { LocalResumeImportService, SqliteResumeVersionStore } from './resume-ver
 export { LocalInterviewNoteClient } from './interview-note-client.js'
 export { LocalProgressSignalClient } from './progress-signal-client.js'
 export { LocalResumeMatchingService } from './resume-matching.js'
+export { LocalWorkspaceOverviewService } from './workspace-overview.js'
 export { evaluateResumeMatchGold } from './resume-match-eval.js'
 export { BOSS_WATCH_SKILL } from './skill.js'
 export type * from './domain.js'
@@ -173,6 +190,7 @@ export type * from './resume-version.js'
 export type * from './resume-matching.js'
 export type * from './progress-signal-client.js'
 export type * from './resume-match-eval.js'
+export type * from './workspace-overview.js'
 
 async function hashVisionAttachment(reference: string, attachments: AttachmentReader): Promise<string> {
   const parsed = decodeVisionAttachmentReference(reference)

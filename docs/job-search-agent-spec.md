@@ -1,8 +1,8 @@
 # Job Search Agent Spec
 
 日期：2026-08-18
-版本：v0.19
-状态：无 Side Panel 捕获主链路已通过测试账号验收；本地投递跟踪、跟进提醒收件箱、GankInterview 请求时快照及观察历史、腾讯 CSV/XLSX 导入、人工 URL/JD 核验、批次计划/checkpoint、受控 ResumeVersion 目录、招聘消息捕获、面经 preview/apply、招聘进度信号文本及 `.eml/.txt` preview/apply 已实现；JD Watch 的本地状态机、预算、显式单次 poll、人工暂停、一次性到期批次 Scheduler、本地结构化 JD Diff、本地 ResumeVersion-JD 可解释匹配和官网/ATS 标准表单只读脱敏预览已实现；自动官网核验、表单填充/提交、外部批量执行与真实账号 Watch 验收仍待完成
+版本：v0.20
+状态：无 Side Panel 捕获主链路已通过测试账号验收；从零开始的只读 workspace overview、本地投递跟踪、跟进提醒收件箱、GankInterview 请求时快照及观察历史、腾讯 CSV/XLSX 导入、人工 URL/JD 核验、批次计划/checkpoint、受控 ResumeVersion 目录、招聘消息捕获、面经 preview/apply、招聘进度信号文本及 `.eml/.txt` preview/apply 已实现；JD Watch 的本地状态机、预算、显式单次 poll、人工暂停、一次性到期批次 Scheduler、本地结构化 JD Diff、本地 ResumeVersion-JD 可解释匹配和官网/ATS 标准表单只读脱敏预览已实现；自动官网核验、表单填充/提交、外部批量执行与真实账号 Watch 验收仍待完成
 
 端到端闭环与 Feishu 单向投影的已确认设计见
 [`2026-08-18 求职 Agent 端到端闭环设计`](superpowers/specs/2026-08-18-job-search-closed-loop-design.md)。
@@ -255,6 +255,27 @@ snapshot/observation 事务。同一截图的二次视觉抽取如果行内容�
 视觉模型输出的 `https://.../...` 截断链接也不会被当作可用来源：系统清空该链接并返回
 `truncated_channel_url` warning，去重回退到公司、届别、招聘类型和岗位字段，避免不同公司因共享 URL 前缀被误合并。
 
+### 4.3.5 从零开始的来源路由
+
+`boss_watch_workspace_overview` 是新用户和每日会话的只读入口。它只从本地 SQLite 汇总 Runtime、
+ResumeVersion、JobLead、核验状态、已捕获完整 JD 和 FeishuTarget 的精确计数，并返回闭环阶段、可用来源和
+下一步工具。它不调用 GankInterview、不打开 BOSS、不读取导入文件、不启动视觉模型，也不写 Feishu。
+
+DSH 在用户没有指定来源时先调用 overview，再让用户选择一条来源路径：GankInterview 请求时搜索、BOSS
+当前可见页发现、CSV/XLSX 导入、剪贴板快照或当前视口截图。不得为了“帮用户开始”而并行刷新所有来源。
+overview 的推荐动作只是导航建议，不是 Gate A、Gate B 或外部动作授权。
+
+### 4.3.6 后续 Hosted Job Source API
+
+闭环稳定后可以把公共招聘信源采集拆成独立 Hosted Job Source API，让新用户通过 API key 获取规范化
+`JobLead`。该服务只返回来源 ID、公司、岗位、城市、届别、招聘类型、公开链接、来源时间和内容哈希；不持有
+用户简历、投递记录、BOSS/ATS 登录态、Cookie 或 Feishu 凭据。客户端仍把结果保存为 `source_only`，并在
+本地完成官方 JD 核验、匹配和授权。
+
+Hosted API 必须复用 `JobLeadSearchSource` 契约，作为 GankInterview 的并列适配器，而不是让个人版运行时依赖
+某个中心服务。免费额度、请求配额和“1 元”收费的计费单位尚未定义；在来源许可、更新成本、滥用控制和
+闭环留存得到实际数据前，不实现支付或把价格写入公开接口。
+
 ## 4.4 岗位匹配与 Gate A
 
 岗位匹配使用“先过滤、再核验、后评分”的顺序：
@@ -504,6 +525,7 @@ DSH Web 原生聊天附件仍只覆盖 PNG/JPG/WebP/GIF 图片；`boss-watch-dsh
 
 | Tool | 作用 | 副作用 |
 | --- | --- | --- |
+| `boss_watch_workspace_overview` | 汇总本地闭环阶段、精确计数、可用来源和下一步 | 只读本地 SQLite；不刷新来源、不打开页面、不写飞书 |
 | `boss_watch_job_list` | 列出本地 JD 摘要 | 只读 |
 | `boss_watch_job_get` | 查看单个 JD 原文、哈希和 artifact 引用 | 只读 |
 | `boss_watch_application_list` | 列出本地投递跟踪表的进度摘要；每次从 SQLite 刷新并按岗位取最新 JD 版本 | 只读 |
@@ -809,6 +831,7 @@ JD Diff、搜索和模型摘要可选择派生文本，审计和来源核对始�
 | M2.7 | 腾讯 CSV/XLSX 与查看权限剪贴板快照导入、来源快照、当前事实和观察历史 | 核心链路和 DSH Web 加载已实现，待用户复制真实可见区域验收映射 |
 | M2.8 | DSH 截图视觉结构化 preview、附件哈希校验、显式确认 apply 和低置信度隔离 | 核心工具与 fixture 已实现，待真实腾讯表当前视口验收 |
 | M2.9 | 受控简历导入、不可变 ResumeVersion 目录和内容寻址本地工件 | 已实现；DSH Web PDF/DOCX 选择到 preview 已端到端验证，本地 v2 匹配和 9-case Gold/Badcase 基线已通过 |
+| M2.10 | 从零开始的 workspace overview、来源路由和闭环 checkpoint | 已实现只读入口；Hosted Job Source API 与计费未实现 |
 | M3 | JD Watch 目标、节流、停止和变化 diff | 本地 Watch 核心、显式单次 poll、一次性到期批次 Scheduler 和结构化 diff 已实现；真实账号验收未完成 |
 | M4 | 面经/招聘消息归档和学习博客联动 | 招聘消息只读捕获、面经 preview/apply 与时间线已整合；学习博客联动仍待整理 |
 | M5 | Feishu 链接接入、字段映射、预览到审批再到幂等投影 | 本地/假客户端链路已实现；测试 Base 已验证单条写入，CLI 回执兼容与写后对账已补回归 |
@@ -817,7 +840,7 @@ JD Diff、搜索和模型摘要可选择派生文本，审计和来源核对始�
 
 ## 12. 事实边界
 
-- **已实现**：本地采集 API、SQLite 追加式事件、Application Tracker read model、GankInterview `JobLead` 请求时快照与追加观察历史、腾讯 CSV/XLSX/剪贴板快照导入、DSH 截图视觉 preview/确认 apply、来源快照、绑定内容哈希的人工 URL/JD 核验及审计记录、受控 ResumeVersion 导入与内容寻址工件、DSH Web 简历选择按钮和本机短期上传会话、`local-evidence-match-v2` 与 Gold/Badcase runner、官网/ATS 标准表单只读脱敏预览、批次本地计划/状态/checkpoint、Browser Controller、BOSS 岗位详情/选中会话招聘方消息观察、面经 preview/apply、Watch 本地状态机/每日预算/显式单次 poll/一次性到期批次 Scheduler/停止与人工暂停、结构化 JD Diff、官网投递 Gate A 预览、Feishu 目标/映射与单向投影的本地/假客户端链路、DSH 插件、导出。
+- **已实现**：从零开始的只读 workspace overview、本地采集 API、SQLite 追加式事件、Application Tracker read model、GankInterview `JobLead` 请求时快照与追加观察历史、腾讯 CSV/XLSX/剪贴板快照导入、DSH 截图视觉 preview/确认 apply、来源快照、绑定内容哈希的人工 URL/JD 核验及审计记录、受控 ResumeVersion 导入与内容寻址工件、DSH Web 简历选择按钮和本机短期上传会话、`local-evidence-match-v2` 与 Gold/Badcase runner、官网/ATS 标准表单只读脱敏预览、批次本地计划/状态/checkpoint、Browser Controller、BOSS 岗位详情/选中会话招聘方消息观察、面经 preview/apply、Watch 本地状态机/每日预算/显式单次 poll/一次性到期批次 Scheduler/停止与人工暂停、结构化 JD Diff、官网投递 Gate A 预览、Feishu 目标/映射与单向投影的本地/假客户端链路、DSH 插件、导出。
 - **已验证**：fixture 中的无 Side Panel 捕获、幂等重试、服务身份、网页 Origin 拒绝、DSH Tool/Skill 组合和页面选择器；测试账号中的列表发现、指定岗位临时详情捕获、自动关页和幂等保存；DSH Web 中虚构 PDF 的选择、受控暂存、草稿生成和 `boss_watch_resume_import_preview` 调用；9 个虚构 Gold 场景和 6 个 Badcase 回归；GankInterview `/api/v1/campus` 的真实响应结构与只读 HTTP 适配 fixture；腾讯智能表两个公开只读岗位页的当前字段与链接形态；用户 Feishu 表的只读链接解析、字段读取、自动映射预览和单条记录回读；`lark-cli` 两种记录列表回执、无 `record_id` 写后唯一回查、Markdown URL 归一化及远端已有记录的 projection 恢复 fixture。
 - **持续验收**：BOSS 页面结构兼容性、字段混淆降级和 Watch 风险预算；一次测试账号通过不代表长期稳定。
 - **设计中**：常驻 Watch 后台调度、自动官方页面核验、模型增强的简历语义抽取、批量投递外部执行、风险感知节流、官网表单字段填充/上传/提交和外部 Action；Feishu 反向同步与多条真实记录的长期验收。当前 Gold 只是 9 个虚构固定场景，扩大模型边界前仍需增加经脱敏审查的真实分布样本。

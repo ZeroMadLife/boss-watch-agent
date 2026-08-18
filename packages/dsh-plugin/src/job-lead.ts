@@ -103,9 +103,16 @@ export interface JobLeadSourceSnapshotInput {
   readonly leads: readonly JobLead[]
 }
 
+export interface JobLeadSummary {
+  readonly total: number
+  readonly sourceOnly: number
+  readonly verified: number
+}
+
 export interface JobLeadStore {
   upsert(leads: readonly JobLead[]): void
   applySnapshot(input: JobLeadSourceSnapshotInput): void
+  summarize(): JobLeadSummary
   list(options?: { limit?: number; sourceKind?: LeadSourceKind }): JobLead[]
   get(leadId: string): JobLead | undefined
   getBySource(sourceKind: LeadSourceKind, sourceRecordId: string): JobLead | undefined
@@ -391,6 +398,18 @@ export class SqliteJobLeadStore implements JobLeadStore {
         persisted.confidence,
       )
     }
+  }
+
+  summarize(): JobLeadSummary {
+    this.#ensureOpen()
+    const row = this.#database.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(CASE WHEN confidence = 'source_only' THEN 1 ELSE 0 END), 0) AS source_only,
+        COALESCE(SUM(CASE WHEN confidence IN ('jd_verified', 'human_confirmed') THEN 1 ELSE 0 END), 0) AS verified
+      FROM job_leads
+    `).get() as unknown as { total: number; source_only: number; verified: number }
+    return { total: row.total, sourceOnly: row.source_only, verified: row.verified }
   }
 
   list(options: { limit?: number; sourceKind?: LeadSourceKind } = {}): JobLead[] {

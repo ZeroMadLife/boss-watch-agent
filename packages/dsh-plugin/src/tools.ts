@@ -37,6 +37,7 @@ import type {
   ProgressSignalSourceKind,
 } from './progress-signal-client.js'
 import type { LocalResumeMatchingService } from './resume-matching.js'
+import type { LocalWorkspaceOverviewService } from './workspace-overview.js'
 
 const unsafeDefineTool = dshDefineTool as unknown as (
   options: DefineToolOptions<ParameterSchemaSpec, ValueSchemaSpec>,
@@ -545,8 +546,38 @@ export function registerBossWatchTools(
   resumeMatching?: LocalResumeMatchingService,
   applicationFormPreview?: LocalApplicationFormPreviewService,
   progressSignalClient?: LocalProgressSignalClient,
+  workspaceOverview?: LocalWorkspaceOverviewService,
 ): () => void {
   const disposers = [
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_workspace_overview',
+        description: 'Read the local job-search workspace readiness, source options, closed-loop checkpoints, and recommended next tools. Local read-only; never refreshes a source, opens a page, or writes Feishu.',
+        parameters: {},
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: STATUS,
+              overview: { type: 'json' },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute() {
+          if (workspaceOverview === undefined) {
+            return { status: 'source_unavailable' as const, message: 'workspace_overview_unavailable' }
+          }
+          try {
+            return { status: 'ok' as const, overview: await workspaceOverview.inspect() as unknown as JsonValue }
+          } catch (error: unknown) {
+            return { status: 'source_unavailable' as const, message: stableError(error) }
+          }
+        },
+      }),
+    ),
     ctx.tools.register(
       defineTool({
         name: 'boss_watch_discover_jobs',

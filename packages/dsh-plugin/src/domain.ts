@@ -45,6 +45,7 @@ export interface ApplicationOverview extends JobSummary {
 export type JsonValue = null | boolean | number | string | JsonValue[] | { readonly [key: string]: JsonValue }
 
 export interface BossWatchDataSource {
+  countJobs?(): Promise<number>
   listJobs(limit: number): Promise<JobSummary[]>
   listApplicationOverviews(limit: number): Promise<ApplicationOverview[]>
   getApplicationOverview(applicationId: string): Promise<ApplicationOverview | undefined>

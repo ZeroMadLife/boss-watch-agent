@@ -32,6 +32,7 @@ export interface ResumeVersion {
 
 export interface ResumeVersionStore {
   save(version: ResumeVersion): { readonly resumeVersion: ResumeVersion; readonly reused: boolean }
+  count(): number
   list(options?: { readonly limit?: number }): ResumeVersion[]
   get(resumeVersionId: string): ResumeVersion | undefined
   getByArtifactRef(localArtifactRef: string): ResumeVersion | undefined
@@ -163,6 +164,12 @@ export class SqliteResumeVersionStore implements ResumeVersionStore {
       version.supersedesResumeVersionId ?? null,
     )
     return { resumeVersion: version, reused: false }
+  }
+
+  count(): number {
+    this.#ensureOpen()
+    const row = this.#database.prepare('SELECT COUNT(*) AS count FROM resume_versions').get() as unknown as { count: number }
+    return row.count
   }
 
   list(options: { readonly limit?: number } = {}): ResumeVersion[] {

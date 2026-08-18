@@ -57,6 +57,7 @@ export interface FeishuProjection {
 
 export interface FeishuTargetStore {
   saveTarget(target: FeishuTarget): FeishuTarget
+  countTargets(): number
   getTarget(targetId: string): FeishuTarget | undefined
   getProjection(targetId: string, applicationId: string): FeishuProjection | undefined
   saveProjection(projection: FeishuProjection): FeishuProjection
@@ -158,6 +159,12 @@ export class SqliteFeishuTargetStore implements FeishuTargetStore {
     `).get(target.baseToken, target.tableId) as unknown as TargetRow | undefined
     if (row === undefined) throw new Error('feishu_target_write_failed')
     return fromTargetRow(row)
+  }
+
+  countTargets(): number {
+    this.#ensureOpen()
+    const row = this.#database.prepare('SELECT COUNT(*) AS count FROM feishu_targets').get() as unknown as { count: number }
+    return row.count
   }
 
   getTarget(targetId: string): FeishuTarget | undefined {

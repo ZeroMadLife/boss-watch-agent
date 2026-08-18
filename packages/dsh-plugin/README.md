@@ -6,6 +6,7 @@ or copied into this repository.
 
 DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和受控浏览器工具：
 
+- `boss_watch_workspace_overview`：只读汇总当前闭环阶段、简历/候选/JD/Feishu 计数、可用来源和下一步；不刷新任何来源；
 - `boss_watch_job_list`：列出已捕获 JD；
 - `boss_watch_job_get`：查看单个 JD 原文和哈希；
 - `boss_watch_application_timeline`：查看追加式投递事件；
@@ -51,6 +52,8 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_progress_signal_preview` / `boss_watch_progress_signal_apply`：预览粘贴文本或受控 `.eml/.txt` 招聘通知，明确确认后追加本地进度证据和可选状态提议；不写飞书、不执行外部动作。
 
 同时注册 `boss-watch-job-search` Skill，指导模型按需使用只读工具并在外部动作前停在审批。
+用户没有指定来源、只说“开始找工作”时，Skill 先调用 workspace overview，再让用户在 GankInterview、
+BOSS 当前页、文件、剪贴板或截图中选择一条来源路径，不同时触发多来源读取。
 
 岗位摘要使用 `salaryStatus=available|obfuscated|missing` 表示薪资字段质量。私有字体混淆时不返回
 不可信 `salary`，Skill 只允许展示“薪资待人工核对”，不能由模型猜测数字。

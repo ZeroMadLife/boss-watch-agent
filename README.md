@@ -8,7 +8,7 @@ DSH 通过独立插件调用受控 Browser Controller；Controller 复用 BossHu
 Chrome，只允许检查浏览器状态和捕获当前唯一岗位详情页。迁移决策见 [DSH 采用决策](docs/dsh-adoption-decision.md)。
 原 Pi/Side Panel 路线继续保留，用于对话分析、页面适配器调试和故障回退。
 
-当前版本已提供 DSH Web 工具、Browser Controller、Chrome Side Panel、岗位与招聘方消息只读捕获、面经和招聘进度信号 preview/apply 归档、SQLite
+当前版本已提供 DSH Web 工具、从零开始的本地 workspace overview、Browser Controller、Chrome Side Panel、岗位与招聘方消息只读捕获、面经和招聘进度信号 preview/apply 归档、SQLite
 证据日志、本地投递跟踪表、GankInterview 校招候选快照、腾讯 CSV/XLSX 本地导入、查看权限下的剪贴板快照导入、来源快照与观察历史、基于内容哈希的人工 URL/JD 核验、受控 ResumeVersion 目录、有序批次计划/checkpoint、JD Watch 本地状态机与显式单次观察/到期批次、只读 JD Diff、官网投递 Gate A 预览、规则分析和导出。它不会自动发送消息、投递简历、
 接受面试或处理验证码。
 
@@ -82,6 +82,17 @@ npm run dsh:dev
 用户查看候选保存的链接后，可以依次明确调用 `boss_watch_lead_url_confirm` 和
 `boss_watch_lead_jd_confirm`，把当前哈希的候选提升为 `url_verified`、`human_confirmed`。这两个工具只写本地
 核验事实，不打开网页；来源内容变化会撤销旧核验，自动页面核验仍未实现。
+
+### 从零开始
+
+新用户可以先在 DSH 中说“开始找工作”或“今天从哪里开始”。DSH 会调用只读工具
+`boss_watch_workspace_overview`，检查本地 Runtime、简历版本、岗位候选、已核验 JD、已捕获完整 JD 和
+Feishu 目标是否就绪，并返回当前阶段与下一步。它不会因此自动访问 GankInterview、遍历 BOSS、读取文件、
+上传简历或写入 Feishu。
+
+岗位来源按用户选择路由，一次只走一条：已配置 GankInterview 时做一次请求时搜索；用户已登录 BOSS 时读取
+当前可见列表；用户持有招聘汇总时导入 CSV/XLSX、剪贴板或当前视口截图。招聘汇总和 GankInterview 先生成
+`source_only` 候选；BOSS 列表摘要需要捕获当前详情页后才形成完整 JD。两条路径都不能用列表摘要直接评分或投递。
 
 腾讯文档岗位表有导出权限时，请先通过官方能力导出 CSV/XLSX，并放入本地导入目录：
 
