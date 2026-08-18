@@ -1,8 +1,10 @@
-import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { AgentTool, StreamFn } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent, Model } from "@earendil-works/pi-ai";
 import { EventStream } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { createBossWatchAgent } from "../src/runtime/create-boss-watch-agent.js";
+import { BossToolRegistry } from "../src/runtime/tool-registry.js";
+import { analyzeConversationTool } from "../src/tools/analyze-conversation-tool.js";
 
 const usage = {
   input: 0,
@@ -110,5 +112,59 @@ describe("Pi runtime integration", () => {
     expect(toolResult.content[0]).toMatchObject({ type: "text" });
     expect(JSON.stringify(toolResult.content)).toContain("resume_request");
     expect(requestCount).toBe(2);
+  });
+
+  it("blocks a registered external tool before its execute function runs", async () => {
+    let executed = false;
+    const sendTool = {
+      ...analyzeConversationTool,
+      name: "send_message",
+      description: "Test-only external side effect",
+      async execute() {
+        executed = true;
+        return {
+          content: [{ type: "text", text: "sent" }],
+          details: {},
+          terminate: true,
+        };
+      },
+    } as unknown as AgentTool;
+    const registry = new BossToolRegistry([
+      {
+        tool: sendTool,
+        action: "send_message",
+        effect: "external_side_effect",
+        operation: "send_one_message",
+      },
+    ]);
+    let requestCount = 0;
+    const streamFn: StreamFn = () => {
+      requestCount += 1;
+      return new ScriptedStream(
+        assistantMessage(
+          [
+            {
+              type: "toolCall",
+              id: "call-send-001",
+              name: "send_message",
+              arguments: {
+                conversationId: "conversation-demo-001",
+                candidateId: "candidate-demo-001",
+                recruiterId: "recruiter-demo-001",
+                messages: [],
+              },
+            },
+          ],
+          "toolUse",
+        ),
+      );
+    };
+
+    const agent = createBossWatchAgent({ model, streamFn, toolRegistry: registry });
+    await agent.prompt("发送消息");
+
+    expect(executed).toBe(false);
+    expect(requestCount).toBe(1);
+    expect(JSON.stringify(agent.state.messages)).toContain("human approval token");
   });
 });

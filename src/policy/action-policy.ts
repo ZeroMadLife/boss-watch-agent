@@ -1,7 +1,12 @@
 export type BossAction =
   | "capture_conversation"
+  | "capture_job_description"
+  | "capture_interview_note"
   | "analyze_conversation"
+  | "record_evidence"
   | "draft_reply"
+  | "propose_status_change"
+  | "sync_feishu"
   | "send_message"
   | "send_resume"
   | "schedule_follow_up"
@@ -14,11 +19,16 @@ export type ActionDecision =
 
 const observationActions = new Set<BossAction>([
   "capture_conversation",
+  "capture_job_description",
+  "capture_interview_note",
   "analyze_conversation",
+  "record_evidence",
   "draft_reply",
+  "propose_status_change",
 ]);
 
 const approvalActions = new Set<BossAction>([
+  "sync_feishu",
   "send_message",
   "send_resume",
   "schedule_follow_up",

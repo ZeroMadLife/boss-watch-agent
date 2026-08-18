@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Boss Watch",
+  "version": "0.1.0",
+  "description": "Capture the current BOSS job or recruiter message into a local, auditable journal.",
+  "permissions": ["sidePanel", "storage"],
+  "host_permissions": [
+    "https://www.zhipin.com/*",
+    "http://127.0.0.1:4318/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开 Boss Watch"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
