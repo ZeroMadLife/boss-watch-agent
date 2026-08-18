@@ -1,0 +1,204 @@
+[
+  {
+    "caseId": "strong-backend-agent-match",
+    "tags": ["baseline"],
+    "jd": {
+      "company": "虚构甲科技",
+      "role": "Agent 平台工程师",
+      "description": "2027届招聘，本科及以上，工作地点上海。要求 TypeScript、React、Node.js、Redis、Docker、Agent 和 RAG。"
+    },
+    "resume": {
+      "text": "候选人甲，2027届，本科，上海。TypeScript React Node.js Redis Docker Agent RAG。"
+    },
+    "gold": {
+      "requiredSkills": ["TypeScript", "React", "Node.js", "Redis", "Docker", "RAG", "Agent"],
+      "matchedSkills": ["TypeScript", "React", "Node.js", "Redis", "Docker", "RAG", "Agent"],
+      "hardConstraints": {
+        "education": "matched",
+        "cohort": "matched",
+        "location": "matched"
+      },
+      "matchLevel": "strong",
+      "scoreRange": { "min": 100, "max": 100 }
+    }
+  },
+  {
+    "caseId": "cohort-and-location-mismatch",
+    "tags": ["baseline"],
+    "jd": {
+      "company": "虚构乙科技",
+      "role": "前端平台工程师",
+      "description": "2027届，本科及以上，工作地点上海。要求 TypeScript、React、Node.js、Redis、Docker、Agent 和 RAG。"
+    },
+    "resume": {
+      "text": "候选人乙，2026届，硕士，广州。Java Spring。"
+    },
+    "gold": {
+      "requiredSkills": ["TypeScript", "React", "Node.js", "Redis", "Docker", "RAG", "Agent"],
+      "matchedSkills": [],
+      "hardConstraints": {
+        "education": "matched",
+        "cohort": "unmatched",
+        "location": "unmatched"
+      },
+      "matchLevel": "insufficient_evidence",
+      "scoreRange": { "min": 20, "max": 20 }
+    }
+  },
+  {
+    "caseId": "technical-aliases",
+    "tags": ["alias"],
+    "jd": {
+      "company": "虚构丙科技",
+      "role": "云平台后端工程师",
+      "description": "2027届，本科及以上，杭州。要求 Spring Boot、PostgreSQL、Kubernetes 和 AWS。"
+    },
+    "resume": {
+      "text": "候选人丙，2027届，本科，杭州。springboot、postgres、k8s、Amazon Web Services。"
+    },
+    "gold": {
+      "requiredSkills": ["Spring", "PostgreSQL", "Kubernetes", "AWS"],
+      "matchedSkills": ["Spring", "PostgreSQL", "Kubernetes", "AWS"],
+      "hardConstraints": {
+        "education": "matched",
+        "cohort": "matched",
+        "location": "matched"
+      },
+      "matchLevel": "strong",
+      "scoreRange": { "min": 100, "max": 100 }
+    }
+  },
+  {
+    "caseId": "education-preference-is-not-minimum",
+    "tags": ["badcase", "education"],
+    "jd": {
+      "company": "虚构丁科技",
+      "role": "Java 工程师",
+      "description": "2027届，本科及以上，硕士优先，工作地点南京。要求 Java 和 MySQL。"
+    },
+    "resume": {
+      "text": "候选人丁，2027届，本科，南京。Java MySQL。"
+    },
+    "gold": {
+      "requiredSkills": ["Java", "MySQL"],
+      "matchedSkills": ["Java", "MySQL"],
+      "hardConstraints": {
+        "education": "matched",
+        "cohort": "matched",
+        "location": "matched"
+      },
+      "matchLevel": "strong",
+      "scoreRange": { "min": 100, "max": 100 }
+    }
+  },
+  {
+    "caseId": "no-comparable-evidence",
+    "tags": ["badcase", "insufficient-evidence"],
+    "jd": {
+      "company": "虚构戊科技",
+      "role": "综合项目岗位",
+      "description": "负责跨团队协作、需求沟通和项目落地。"
+    },
+    "resume": {
+      "text": "候选人戊，具备沟通、组织和文档能力。"
+    },
+    "gold": {
+      "requiredSkills": [],
+      "matchedSkills": [],
+      "hardConstraints": {},
+      "matchLevel": "insufficient_evidence",
+      "scoreRange": { "min": 0, "max": 0 }
+    }
+  },
+  {
+    "caseId": "ascii-skill-boundaries",
+    "tags": ["badcase", "term-boundary"],
+    "jd": {
+      "company": "虚构己科技",
+      "role": "基础架构工程师",
+      "description": "2027届，本科，北京。要求 Go 和 SQL。"
+    },
+    "resume": {
+      "text": "候选人己，2027届，本科，北京。使用 Django 和 NoSQL。"
+    },
+    "gold": {
+      "requiredSkills": ["Go", "SQL"],
+      "matchedSkills": [],
+      "hardConstraints": {
+        "education": "matched",
+        "cohort": "matched",
+        "location": "matched"
+      },
+      "matchLevel": "weak",
+      "scoreRange": { "min": 40, "max": 40 }
+    }
+  },
+  {
+    "caseId": "experience-hard-mismatch-caps-level",
+    "tags": ["badcase", "hard-constraint"],
+    "jd": {
+      "company": "虚构庚科技",
+      "role": "Java 高级工程师",
+      "description": "本科，3年以上工作经验，要求 Java。"
+    },
+    "resume": {
+      "text": "候选人庚，本科，2年工作经验，Java。"
+    },
+    "gold": {
+      "requiredSkills": ["Java"],
+      "matchedSkills": ["Java"],
+      "hardConstraints": {
+        "education": "matched",
+        "experience": "unmatched"
+      },
+      "matchLevel": "weak",
+      "scoreRange": { "min": 49, "max": 49 }
+    }
+  },
+  {
+    "caseId": "unknown-hard-constraint-caps-level",
+    "tags": ["badcase", "hard-constraint"],
+    "jd": {
+      "company": "虚构辛科技",
+      "role": "Java 工程师",
+      "description": "本科，3年以上工作经验，要求 Java。"
+    },
+    "resume": {
+      "text": "候选人辛，本科，Java。"
+    },
+    "gold": {
+      "requiredSkills": ["Java"],
+      "matchedSkills": ["Java"],
+      "hardConstraints": {
+        "education": "matched",
+        "experience": "unknown"
+      },
+      "matchLevel": "moderate",
+      "scoreRange": { "min": 74, "max": 74 }
+    }
+  },
+  {
+    "caseId": "truncated-resume-is-not-strong",
+    "tags": ["badcase", "extraction"],
+    "jd": {
+      "company": "虚构壬科技",
+      "role": "后端工程师",
+      "description": "2027届，本科，上海。要求 TypeScript 和 Redis。"
+    },
+    "resume": {
+      "text": "候选人壬，2027届，本科，上海。TypeScript Redis。",
+      "extractionStatus": "text_truncated"
+    },
+    "gold": {
+      "requiredSkills": ["TypeScript", "Redis"],
+      "matchedSkills": ["TypeScript", "Redis"],
+      "hardConstraints": {
+        "education": "matched",
+        "cohort": "matched",
+        "location": "matched"
+      },
+      "matchLevel": "insufficient_evidence",
+      "scoreRange": { "min": 24, "max": 24 }
+    }
+  }
+]

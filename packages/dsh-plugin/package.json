@@ -1,0 +1,89 @@
+{
+  "name": "boss-watch-dsh-plugin",
+  "version": "0.1.0",
+  "description": "Approval-gated job, application, and Feishu projection tools for DeepSeek Harness.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown --config tsdown.config.mjs && npm run build:types",
+    "build:types": "tsc -p tsconfig.json --emitDeclarationOnly --outDir lib/types",
+    "eval:resume-match": "tsx scripts/evaluate-resume-match.ts",
+    "prepare": "npm run build",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-runtime": "*",
+    "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-skill": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "dependencies": {
+    "exceljs": "4.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.4",
+    "@types/react": "18.3.31",
+    "@deepseek-ai/cordis": "link:../../../deepseek-harness/vendor/cordis",
+    "@deepseek-ai/cordis-plugin-include": "link:../../../deepseek-harness/vendor/include",
+    "@deepseek-ai/cordis-plugin-loader": "link:../../../deepseek-harness/vendor/loader",
+    "@deepseek-ai/dsh-client-locale": "link:../../../deepseek-harness/packages/client/locale",
+    "@deepseek-ai/dsh-client-runtime": "link:../../../deepseek-harness/packages/client/runtime",
+    "@deepseek-ai/dsh-client-ui-conversation": "link:../../../deepseek-harness/packages/client/ui-conversation",
+    "@deepseek-ai/dsh-client-ui-primitives": "link:../../../deepseek-harness/packages/client/ui-primitives",
+    "@deepseek-ai/dsh-client-ui-slots": "link:../../../deepseek-harness/packages/client/ui-slots",
+    "@deepseek-ai/dsh-llm": "link:../../../deepseek-harness/packages/llm/llm",
+    "@deepseek-ai/dsh-skill": "link:../../../deepseek-harness/packages/skill/skill",
+    "@deepseek-ai/dsh-system-prompt": "link:../../../deepseek-harness/packages/core/system-prompt",
+    "@deepseek-ai/dsh-tools": "link:../../../deepseek-harness/packages/core/tools",
+    "react": "18.3.1",
+    "tsdown": "0.22.2",
+    "tsx": "4.19.0",
+    "typescript": "5.9.3"
+  }
+}

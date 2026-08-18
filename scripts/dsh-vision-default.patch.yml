@@ -1,0 +1,7 @@
+# Default vision route for dsh-vision-subagent when launched through npm run dsh:dev.
+# This overlay is applied after the web profile's own cordis.patch.yml, so it wins.
+# To use a different vision model, change `model` here or edit the profile patch.
+- id: vision-subagent
+  config:
+    provider: newapi-vision
+    model: gpt-5.6-sol
