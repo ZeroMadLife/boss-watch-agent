@@ -1,7 +1,7 @@
 # DSH 求职插件架构与页面支持矩阵
 
 日期：2026-08-17
-状态：无 Side Panel 岗位捕获切片已实现；M3 Watch 本地核心、一次性到期批次、结构化 Diff、招聘方消息捕获和面经归档已实现，待真实账号低频观察验收
+状态：BOSS 当前页与固定关键词搜索切片已实现；候选面板、M3 Watch 本地核心、一次性到期批次、结构化 Diff、招聘方消息捕获和面经归档已实现，待真实账号低频观察验收
 
 文档命令使用可移植的业务仓变量：
 
@@ -19,7 +19,8 @@ DSH Web Agent
        ├─ facts: job_list / job_get / timeline / overview / jd_diff
        ├─ resume: resume_import_preview / resume_import_apply / resume_list / resume_get
        ├─ application: apply_preview (verified lead + registered resume, Gate A)
-       ├─ browser: browser_status / discover_jobs / capture_discovered_job / capture_current_job / capture_current_conversation
+       ├─ browser: browser_status / discover_jobs / boss_search_preview+run / capture_discovered_job / capture_current_job / capture_current_conversation
+       ├─ candidate: workspace_overview / candidate_board
        ├─ interview: interview_note_preview / interview_note_apply
        ├─ progress: progress_signal_preview / progress_signal_apply
        ├─ watch: watch_create / watch_list / watch_poll / watch_run_due / watch_stop / watch_resume
@@ -55,6 +56,8 @@ DSH Transcript 只记录 Agent 的观察和工具调用，不替代 SQLite 事�
 | Feishu 字段预览 | Host tool `boss_watch_feishu_preview` | 已实现，只读；不调用 Feishu |
 | 浏览器状态 | Host tool `boss_watch_browser_status` | 已实现，不操作页面 |
 | 岗位卡片发现 | Host tool `boss_watch_discover_jobs` | 已实现，只读当前列表页 |
+| BOSS 关键词搜索 | Host tools `boss_watch_boss_search_preview/run` | 已实现；固定关键词/城市、最多 2 页/5 个岗位，跨页去重、详情串行捕获，登录/验证/风控/断连 handoff |
+| 统一候选面板 | Host tool `boss_watch_candidate_board` | 已实现；并列展示 Gank/Tencent 来源候选与已捕获 BOSS JD，不模糊合并、不刷新来源 |
 | 发现结果捕获 | Host tool `boss_watch_capture_discovered_job` | 已实现，临时详情页读取后自动关闭 |
 | 当前岗位捕获 | Host tool `boss_watch_capture_current_job` | 已实现，只写本地 SQLite |
 | 当前会话捕获 | Host tool `boss_watch_capture_current_conversation` | 已实现，只读取唯一选中会话最近招聘方消息；不回复、不发送 |
