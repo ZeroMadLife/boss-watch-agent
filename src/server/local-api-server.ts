@@ -7,6 +7,7 @@ import {
   BossBrowserRunController,
   type BossHunterBrowserRuntime,
 } from "../browser/browser-run-controller.js";
+import { type BrowserJobSearchInput, createBrowserJobSearchPlan } from "../browser/job-search.js";
 import { SqliteApplicationStore } from "../storage/sqlite-application-store.js";
 import { ApiError } from "./api-error.js";
 import { CaptureApi, type PiConversationAnalyzer } from "./capture-api.js";
@@ -215,6 +216,7 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
     if (
       url.pathname === "/api/v1/browser/status" ||
       url.pathname === "/api/v1/browser/jobs/discover" ||
+      url.pathname === "/api/v1/browser/jobs/search" ||
       url.pathname === "/api/v1/browser/captures/job" ||
       url.pathname === "/api/v1/browser/captures/conversation" ||
       url.pathname === "/api/v1/browser/jobs/capture" ||
@@ -229,6 +231,25 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
       }
       if (request.method === "GET" && url.pathname === "/api/v1/browser/jobs/discover") {
         writeJson(response, 200, await browserController.discoverJobs());
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/browser/jobs/search") {
+        const body = await readJsonBody(request);
+        if (!isRecord(body) || typeof body.keyword !== "string" || typeof body.city !== "string") {
+          throw new ApiError(400, "invalid_request");
+        }
+        const input: BrowserJobSearchInput = {
+          keyword: body.keyword,
+          city: body.city,
+          ...(typeof body.maxPages === "number" ? { maxPages: body.maxPages } : {}),
+          ...(typeof body.maxJobs === "number" ? { maxJobs: body.maxJobs } : {}),
+        };
+        try {
+          createBrowserJobSearchPlan(input);
+        } catch {
+          throw new ApiError(400, "invalid_request");
+        }
+        writeJson(response, 200, await browserController.searchJobs(input));
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/v1/browser/captures/job") {

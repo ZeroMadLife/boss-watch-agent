@@ -22,6 +22,7 @@ export const BOSS_WATCH_SKILL = {
 - 腾讯文档 Canvas 或剪贴板不可用、且用户主动提供当前视口截图时，先把视觉子代理输出的结构化行交给 \`boss_watch_lead_visual_preview\`；它只校验公司/岗位、截图哈希、低置信度和重复行，不访问腾讯文档、不写岗位事实。
 - 只有用户明确确认视觉预览中的来源、接受/拒绝数量和低置信度行后，才调用 \`boss_watch_lead_visual_apply\`；短期 token、截图哈希或映射发生变化会拒绝应用，低置信度行不会直接写入岗位事实。
 - 用户查看已保存的候选池时调用 \`boss_watch_lead_list\`；指定某个候选时调用 \`boss_watch_lead_get\`。
+- 用户要在 DSH 中查看统一岗位面板时调用 \`boss_watch_candidate_board\`；它只并列展示来源候选和已捕获 BOSS JD，不模糊合并、不刷新来源、不写 Feishu。
 - 用户询问新增岗位、来源变化或旧核验为何失效时调用 \`boss_watch_lead_observation_list\`；默认只返回 \`new/changed\`，需要核对最近一次未变化刷新时才设置 \`includeUnchanged=true\`。该工具只读本地，不会刷新 GankInterview 或腾讯文档。
 - 用户询问腾讯表最近何时导入、用了哪个工作表或导入数量时调用 \`boss_watch_source_status\`；它只读本地成功快照，不代表来源当前仍未变化。
 - 只有用户已经查看候选保存的链接，并明确确认它是当前公司官网/ATS 链接时，才调用 \`boss_watch_lead_url_confirm\`。必须传 \`boss_watch_lead_get\` 返回的当前 \`leadId + contentHash\`；工具不接受任意 URL，也不打开页面。
@@ -41,6 +42,7 @@ export const BOSS_WATCH_SKILL = {
 - 用户询问“JD 具体改了什么”时调用只读工具 \`boss_watch_jd_diff\`；它只比较同一 application 的本地 Artifact 历史，默认取最近两个不同 contentHash，也可使用已返回的 hash 指定版本，不打开页面、不调用模型、不写 SQLite。缺少历史基线时原样报告 \`jd_diff_baseline_missing\`。
 - Watch 返回 \`paused_human_required\`、登录、验证码、风控或页面适配器失配时必须停止并交还人工；用户明确说明已处理 handoff 后，才调用 \`boss_watch_watch_resume\`，恢复本身不会自动 poll。
 - 用户在 BOSS 岗位列表、搜索结果或推荐页时，先调用 \`boss_watch_discover_jobs\` 读取可见岗位卡片；它不点击、不导航、不写库。
+- 用户明确给出 BOSS 关键词和城市、要求主动搜索时，先调用 \`boss_watch_boss_search_preview\`；它只生成最多 2 页/5 个岗位的固定计划。只有用户确认精确计划后，才调用 \`boss_watch_boss_search_run\`。执行按页去重、详情串行采集；登录、验证码、风控或浏览器断连立即 handoff，不自动重试。
 - 用户明确要求查看或保存某个发现结果的完整 JD 时，调用 \`boss_watch_capture_discovered_job\`。只传上一条发现结果中的 \`discoveryId\` 和 \`externalJobId\`；工具只允许在临时页打开该岗位并写本地事实，完成后自动关闭。
 - 用户已经打开唯一岗位详情页时，可以直接调用 \`boss_watch_browser_status\` 和 \`boss_watch_capture_current_job\`。所有浏览器工具都不接受 target、任意 URL、CSS 或 JavaScript。
 - 用户已经打开 BOSS 的唯一聊天页、并明确把当前会话归属到某个已存在 application 时，调用 \`boss_watch_capture_current_conversation\`；它只读取当前选中会话最近一条招聘方可见消息，保存后返回事件/工件摘要。它不读取候选人自发消息、不回复、不点击、不发送；没有唯一聊天页、登录/验证码或页面适配失败时交还人工。
@@ -59,7 +61,7 @@ export const BOSS_WATCH_SKILL = {
 
 先用 \`boss_watch_workspace_overview\` 判断当前闭环阶段。只展示可用的来源路径，让用户选择 GankInterview 请求时搜索、BOSS 当前页发现、CSV/XLSX 导入、剪贴板或截图中的一条；不要并行刷新所有来源。
 
-1. 用户要求找岗位、查看当前岗位列表或比较可见岗位时，直接调用 \`boss_watch_discover_jobs\`。
+1. 用户要求找岗位、查看当前岗位列表或比较可见岗位时，优先调用 \`boss_watch_candidate_board\` 查看本地事实；需要读取当前 BOSS 页面时再调用 \`boss_watch_discover_jobs\`。
 2. 用户要求寻找校招岗位时调用 \`boss_watch_lead_search\`；先展示来源、更新时间和 \`confidence\`，不能把来源摘要当作官网 JD。
 3. 用户提供腾讯表导出文件时先调用 \`boss_watch_lead_import_preview\`；如果需要多个 XLSX 工作表，要求用户明确指定 sheet。预览通过后等待明确确认，再调用 \`boss_watch_lead_import_apply\`。
 4. 用户只有查看权限时，要求其在腾讯表中选中可见表格区域并复制；先调用 \`boss_watch_lead_clipboard_preview\`，展示行统计和脱敏样例，确认后调用 \`boss_watch_lead_clipboard_apply\`。不得声称这是全表同步。

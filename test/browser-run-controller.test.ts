@@ -215,6 +215,155 @@ describe("Boss Browser Run Controller", () => {
     expect(captureJob).toHaveBeenCalledOnce();
   });
 
+  it("searches bounded pages, deduplicates external ids, captures details serially, and closes temporary tabs", async () => {
+    const listUrls = [
+      "https://www.zhipin.com/web/geek/job?query=agent&city=101020100",
+      "https://www.zhipin.com/web/geek/job?query=agent&city=101020100&page=2",
+    ];
+    const detailUrls = [
+      "https://www.zhipin.com/job_detail/search-001.html",
+      "https://www.zhipin.com/job_detail/search-002.html",
+      "https://www.zhipin.com/job_detail/search-003.html",
+    ];
+    let currentUrl = "";
+    let sequence = 0;
+    const newTab = vi.fn(async (url: string) => {
+      currentUrl = url;
+      sequence += 1;
+      return `search-target-${sequence}`;
+    });
+    const close = vi.fn(async () => {});
+    const captureJob = vi.fn(
+      async (snapshot: unknown): Promise<CaptureResult> => ({
+        applicationId: `application-${(snapshot as { externalJobId: string }).externalJobId}`,
+        eventId: "event-search",
+        artifactId: "artifact-search",
+        artifactRef: "local-artifact://search",
+        contentHash: "d".repeat(64),
+        savedAt: "2026-08-18T02:00:00.000Z",
+        deduplicated: false,
+      }),
+    );
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async targets() {
+          return [{ targetId: "unused", type: "page", title: "搜索", url: currentUrl }];
+        },
+        async evaluate(_targetId, expression) {
+          if (expression.includes("job-card-wrap")) {
+            const page = currentUrl.includes("page=2") ? 1 : 0;
+            const jobs =
+              page === 0
+                ? [
+                    {
+                      externalJobId: "search-001",
+                      role: "后端工程师",
+                      company: "示例一",
+                      jobUrl: detailUrls[0],
+                    },
+                    {
+                      externalJobId: "search-002",
+                      role: "平台工程师",
+                      company: "示例二",
+                      jobUrl: detailUrls[1],
+                    },
+                  ]
+                : [
+                    {
+                      externalJobId: "search-002",
+                      role: "平台工程师",
+                      company: "示例二",
+                      jobUrl: detailUrls[1],
+                    },
+                    {
+                      externalJobId: "search-003",
+                      role: "AI 工程师",
+                      company: "示例三",
+                      jobUrl: detailUrls[2],
+                    },
+                  ];
+            return { status: "ready", sourceUrl: currentUrl, jobs };
+          }
+          const id = currentUrl.match(/search-[0-9]+/u)?.[0] ?? "search-001";
+          return {
+            status: "ready",
+            sourceUrl: currentUrl,
+            externalJobId: id,
+            company: "示例公司",
+            role: "工程师",
+            description: "虚构 JD",
+          };
+        },
+        newTab,
+        close,
+      }),
+      captureJob,
+      now: () => new Date("2026-08-18T02:00:00.000Z"),
+    });
+
+    const result = await controller.searchJobs({ keyword: "agent", city: "上海", maxPages: 2, maxJobs: 3 });
+    expect(result).toMatchObject({ status: "ok", pagesVisited: 2 });
+    if (!("items" in result)) throw new Error("expected_search_items");
+    expect(result.items).toHaveLength(3);
+    expect(result.items.map((item) => item.job.externalJobId)).toEqual([
+      "search-001",
+      "search-002",
+      "search-003",
+    ]);
+    expect(newTab.mock.calls.map(([url]) => url)).toEqual([
+      listUrls[0],
+      detailUrls[0],
+      detailUrls[1],
+      listUrls[1],
+      detailUrls[2],
+    ]);
+    expect(close).toHaveBeenCalledTimes(5);
+    expect(captureJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops a bounded search at a verification handoff without opening another detail", async () => {
+    const newTab = vi.fn(async (url: string) =>
+      url.includes("job_detail") ? "detail-handoff" : "list-handoff",
+    );
+    const close = vi.fn(async () => {});
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async evaluate(_targetId, expression) {
+          if (expression.includes("job-card-wrap")) {
+            return {
+              status: "ready",
+              sourceUrl: "https://www.zhipin.com/web/geek/job?query=agent&city=101020100",
+              jobs: [
+                {
+                  externalJobId: "search-handoff",
+                  role: "工程师",
+                  jobUrl: "https://www.zhipin.com/job_detail/search-handoff.html",
+                },
+              ],
+            };
+          }
+          return {
+            status: "human_required",
+            reason: "verification",
+            sourceUrl: "https://www.zhipin.com/job_detail/search-handoff.html",
+          };
+        },
+        newTab,
+        close,
+      }),
+      captureJob: vi.fn(),
+    });
+
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "human_required",
+      reason: "verification",
+      pagesVisited: 1,
+    });
+    expect(newTab).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledWith("list-handoff");
+    expect(close).not.toHaveBeenCalledWith("detail-handoff");
+  });
+
   it("keeps a watch tab open when polling reaches a human handoff", async () => {
     const close = vi.fn(async () => {});
     const controller = new BossBrowserRunController({

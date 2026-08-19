@@ -38,6 +38,8 @@ import type {
 } from './progress-signal-client.js'
 import type { LocalResumeMatchingService } from './resume-matching.js'
 import type { LocalWorkspaceOverviewService } from './workspace-overview.js'
+import type { LocalCandidateBoardService } from './candidate-board.js'
+import type { LocalBossJobSearchService } from './boss-job-search.js'
 
 const unsafeDefineTool = dshDefineTool as unknown as (
   options: DefineToolOptions<ParameterSchemaSpec, ValueSchemaSpec>,
@@ -255,6 +257,27 @@ const LEAD = {
   },
 } as const
 
+const CANDIDATE_BOARD_ITEM = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    candidateId: { type: 'string', required: true },
+    recordKind: { type: 'string', required: true, enum: ['source_lead', 'captured_job'] },
+    sourceKind: { type: 'string', required: true },
+    company: { type: 'string', required: true },
+    role: { type: 'string', required: true },
+    city: { type: 'string' },
+    cohort: { type: 'string' },
+    recruitmentType: { type: 'string' },
+    channelUrl: { type: 'string' },
+    jobUrl: { type: 'string' },
+    capturedAt: { type: 'string', required: true },
+    confidence: { type: 'string', required: true },
+    jdStatus: { type: 'string', required: true, enum: ['source_summary', 'complete'] },
+    nextAction: { type: 'string', required: true, enum: ['verify_official_jd', 'match_resume', 'prepare_application'] },
+  },
+} as const
+
 const LEAD_OBSERVATION = {
   type: 'object',
   additionalProperties: false,
@@ -422,6 +445,12 @@ const BROWSER_DISCOVERY_STATUS = {
   enum: ['ready', 'no_supported_tab', 'target_ambiguous', 'human_required', 'environment_interrupted'],
 } as const
 
+const BROWSER_SEARCH_STATUS = {
+  type: 'string',
+  required: true,
+  enum: ['ok', 'partial', 'cancelled', 'invalid_request', 'source_unavailable', 'no_supported_tab', 'target_ambiguous', 'human_required', 'environment_interrupted'],
+} as const
+
 const BROWSER_DISCOVERY_TARGET = {
   type: 'object',
   additionalProperties: false,
@@ -449,6 +478,17 @@ const BROWSER_JOB_SUMMARY = {
     education: { type: 'string' },
     location: { type: 'string' },
     jobUrl: { type: 'string', required: true },
+  },
+} as const
+
+const BROWSER_SEARCH_ITEM = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    job: BROWSER_JOB_SUMMARY,
+    status: { type: 'string', required: true, enum: ['captured', 'failed'] },
+    applicationId: { type: 'string' },
+    reason: { type: 'string' },
   },
 } as const
 
@@ -547,8 +587,41 @@ export function registerBossWatchTools(
   applicationFormPreview?: LocalApplicationFormPreviewService,
   progressSignalClient?: LocalProgressSignalClient,
   workspaceOverview?: LocalWorkspaceOverviewService,
+  candidateBoard?: LocalCandidateBoardService,
+  bossJobSearch?: LocalBossJobSearchService,
 ): () => void {
   const disposers = [
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_candidate_board',
+        description: 'Read a unified local candidate board from Gank/Tencent source leads and captured BOSS JDs. Read-only; keeps source facts separate, does not refresh sources or write Feishu.',
+        parameters: {
+          limit: { type: 'integer', description: 'Maximum candidates to return, from 1 to 50.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: STATUS,
+              candidates: { type: 'array', items: CANDIDATE_BOARD_ITEM, required: true },
+              count: { type: 'integer', required: true },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (candidateBoard === undefined) return { status: 'source_unavailable' as const, candidates: [], count: 0, message: 'candidate_board_unavailable' }
+          try {
+            const candidates = await candidateBoard.list({ ...numberField(args.limit, 'limit') })
+            return { status: 'ok' as const, candidates: [...candidates], count: candidates.length }
+          } catch (error: unknown) {
+            return { status: 'source_unavailable' as const, candidates: [], count: 0, message: stableError(error) }
+          }
+        },
+      }),
+    ),
     ctx.tools.register(
       defineTool({
         name: 'boss_watch_workspace_overview',
@@ -607,6 +680,83 @@ export function registerBossWatchTools(
             return result.status === 'ready' ? { ...result, jobs: [...result.jobs] } : result
           } catch {
             return { status: 'environment_interrupted' as const, reason: 'controller_unavailable', targetCount: 0 }
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_boss_search_preview',
+        description: 'Preview a bounded BOSS keyword/city search. Does not open a page, capture a JD, send, apply, or write Feishu.',
+        parameters: {
+          keyword: { type: 'string', required: true, description: 'BOSS search keyword.' },
+          city: { type: 'string', required: true, description: 'Supported city name, for example 上海.' },
+          maxPages: { type: 'integer', description: 'At most 2; defaults to 1.' },
+          maxJobs: { type: 'integer', description: 'At most 5; defaults to 5.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: STATUS,
+              previewToken: { type: 'string' },
+              expiresAt: { type: 'string' },
+              plan: { type: 'json' },
+              constraints: { type: 'array', items: { type: 'string' } },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (bossJobSearch === undefined) return { status: 'source_unavailable' as const, message: 'boss_search_unavailable' }
+          try {
+            const preview = bossJobSearch.preview({
+              keyword: args.keyword,
+              city: args.city,
+              ...(typeof args.maxPages === 'number' ? { maxPages: args.maxPages } : {}),
+              ...(typeof args.maxJobs === 'number' ? { maxJobs: args.maxJobs } : {}),
+            })
+            return { status: 'ok' as const, ...preview, constraints: [...preview.constraints] }
+          } catch (error: unknown) {
+            return { status: 'invalid_request' as const, message: stableError(error) }
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_boss_search_run',
+        description: 'Run one confirmed bounded BOSS search preview. Opens generated search/detail pages serially and stops on login, verification, risk, or browser handoff.',
+        parameters: {
+          previewToken: { type: 'string', required: true },
+          confirmed: { type: 'boolean', required: true, description: 'Must be true only after the exact preview is confirmed.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: BROWSER_SEARCH_STATUS,
+              reason: { type: 'string' },
+              targetCount: { type: 'integer' },
+              plan: { type: 'json' },
+              pagesVisited: { type: 'integer' },
+              items: { type: 'array', items: BROWSER_SEARCH_ITEM },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (bossJobSearch === undefined) return { status: 'source_unavailable' as const, message: 'boss_search_unavailable' }
+          try {
+            const result = await bossJobSearch.run(args.previewToken, args.confirmed)
+            return 'items' in result ? { ...result, items: [...result.items] } : result
+          } catch (error: unknown) {
+            const message = stableError(error)
+            return { status: message === 'confirmation_required' ? 'invalid_request' as const : 'source_unavailable' as const, message }
           }
         },
       }),

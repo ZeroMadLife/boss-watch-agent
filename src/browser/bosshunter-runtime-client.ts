@@ -3,6 +3,7 @@ import type {
   BossHunterBrowserTarget,
   BossHunterRuntimeHealth,
 } from "./browser-run-controller.js";
+import { isBossSearchUrl } from "./job-search.js";
 
 const DEFAULT_RUNTIME_URL = "http://127.0.0.1:3456";
 
@@ -74,11 +75,11 @@ export class HttpBossHunterBrowserRuntime implements BossHunterBrowserRuntime {
 
   async newTab(url: string): Promise<string> {
     const targetUrl = new URL(url);
-    if (
-      targetUrl.protocol !== "https:" ||
-      targetUrl.hostname !== "www.zhipin.com" ||
-      !/^\/job_detail\/[a-zA-Z0-9_-]+(?:\.html)?/u.test(targetUrl.pathname)
-    ) {
+    const isDetail =
+      targetUrl.protocol === "https:" &&
+      targetUrl.hostname === "www.zhipin.com" &&
+      /^\/job_detail\/[a-zA-Z0-9_-]+(?:\.html)?/u.test(targetUrl.pathname);
+    if (!isDetail && !isBossSearchUrl(targetUrl.toString())) {
       throw new Error("browser_navigation_url_not_allowed");
     }
     const response = await fetch(`${this.#baseUrl}/new?url=${encodeURIComponent(targetUrl.toString())}`, {

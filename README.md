@@ -83,6 +83,11 @@ npm run dsh:dev
 `boss_watch_lead_jd_confirm`，把当前哈希的候选提升为 `url_verified`、`human_confirmed`。这两个工具只写本地
 核验事实，不打开网页；来源内容变化会撤销旧核验，自动页面核验仍未实现。
 
+如果已登录 BOSS 且希望从关键词/城市开始，可以说“预览 BOSS 搜索 Agent，上海”，再确认预览中的计划。
+插件会用 `boss_watch_boss_search_preview` -> `boss_watch_boss_search_run` 执行最多 2 页/5 个岗位的固定搜索，
+跨页按岗位 ID 去重，详情串行打开并在成功后关闭临时页。登录、验证码、风控或浏览器断连会返回 handoff，
+不会 stealth 抓取、自动重试或发送消息。GankInterview 仍适合做结构化来源候选，BOSS 搜索适合补充平台内最新可见岗位。
+
 ### 从零开始
 
 新用户可以先在 DSH 中说“开始找工作”或“今天从哪里开始”。DSH 会调用只读工具

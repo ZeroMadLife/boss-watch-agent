@@ -7,6 +7,8 @@ import type {
   BrowserConversationCapture,
   BrowserDiscoveredCapture,
   BrowserJobDiscovery,
+  BrowserJobSearchInput,
+  BrowserJobSearchResult,
   BrowserStatus,
   BrowserWatchPoll,
   BossWatchBrowserController,
@@ -50,6 +52,14 @@ export class LocalBossWatchBrowserController implements BossWatchBrowserControll
 
   async discoverJobs(): Promise<BrowserJobDiscovery> {
     return this.#request<BrowserJobDiscovery>('/api/v1/browser/jobs/discover', { method: 'GET' })
+  }
+
+  async searchJobs(input: BrowserJobSearchInput): Promise<BrowserJobSearchResult> {
+    return this.#request<BrowserJobSearchResult>('/api/v1/browser/jobs/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    })
   }
 
   async captureDiscoveredJob(discoveryId: string, externalJobId: string): Promise<BrowserDiscoveredCapture> {

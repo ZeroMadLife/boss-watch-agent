@@ -232,6 +232,41 @@ export type BrowserCapture =
       }
   }
 
+export interface BrowserJobSearchInput {
+  readonly keyword: string
+  readonly city: string
+  readonly maxPages?: number
+  readonly maxJobs?: number
+}
+
+export type BrowserJobSearchItem = {
+  readonly job: BrowserJobSummary
+  readonly status: 'captured' | 'failed'
+  readonly applicationId?: string
+  readonly reason?: string
+}
+
+export type BrowserJobSearchResult =
+  | {
+      readonly status: 'ok' | 'partial' | 'cancelled'
+      readonly plan: Required<BrowserJobSearchInput>
+      readonly pagesVisited: number
+      readonly items: readonly BrowserJobSearchItem[]
+    }
+  | {
+      readonly status: 'invalid_request'
+      readonly reason: string
+      readonly targetCount: 0
+    }
+  | {
+      readonly status: 'no_supported_tab' | 'target_ambiguous' | 'human_required' | 'environment_interrupted'
+      readonly reason: string
+      readonly targetCount: number
+      readonly plan: Required<BrowserJobSearchInput>
+      readonly pagesVisited: number
+      readonly items: readonly BrowserJobSearchItem[]
+    }
+
 export type BrowserConversationCapture =
   | {
       readonly status: 'no_supported_tab'
@@ -292,6 +327,7 @@ export interface BossWatchBrowserController {
   captureCurrentJob(): Promise<BrowserCapture>
   captureCurrentConversation?(applicationId: string): Promise<BrowserConversationCapture>
   discoverJobs(): Promise<BrowserJobDiscovery>
+  searchJobs(input: BrowserJobSearchInput): Promise<BrowserJobSearchResult>
   captureDiscoveredJob(discoveryId: string, externalJobId: string): Promise<BrowserDiscoveredCapture>
   pollJob(applicationId: string): Promise<BrowserWatchPoll>
   inspectApplicationForm(expectedUrl: string): Promise<BrowserApplicationFormInspection>

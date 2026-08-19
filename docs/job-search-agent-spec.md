@@ -1,8 +1,8 @@
 # Job Search Agent Spec
 
 日期：2026-08-18
-版本：v0.20
-状态：无 Side Panel 捕获主链路已通过测试账号验收；从零开始的只读 workspace overview、本地投递跟踪、跟进提醒收件箱、GankInterview 请求时快照及观察历史、腾讯 CSV/XLSX 导入、人工 URL/JD 核验、批次计划/checkpoint、受控 ResumeVersion 目录、招聘消息捕获、面经 preview/apply、招聘进度信号文本及 `.eml/.txt` preview/apply 已实现；JD Watch 的本地状态机、预算、显式单次 poll、人工暂停、一次性到期批次 Scheduler、本地结构化 JD Diff、本地 ResumeVersion-JD 可解释匹配和官网/ATS 标准表单只读脱敏预览已实现；自动官网核验、表单填充/提交、外部批量执行与真实账号 Watch 验收仍待完成
+版本：v0.21
+状态：在 v0.20 基础上，已增加 BOSS 固定关键词/城市搜索计划、最多 2 页/5 岗位的分页去重、详情串行捕获、搜索 preview/run 工具和 service-token API；登录、验证码、风控或浏览器断连仍立即 handoff。微信内推群与 Tailscale 手机同步只保留未来 MessageSource 适配器边界，尚未读取后台消息。自动官网核验、表单填充/提交、外部批量执行与真实账号 Watch 验收仍待完成
 
 端到端闭环与 Feishu 单向投影的已确认设计见
 [`2026-08-18 求职 Agent 端到端闭环设计`](superpowers/specs/2026-08-18-job-search-closed-loop-design.md)。
@@ -148,6 +148,22 @@ Side Panel 不参与这条主链路。DSH 不能传入任意 URL、target、CSS 
 本轮 `jobs` 数组中选择已有 `externalJobId`，不是让模型自行拼接导航地址。遇到登录或验证时，临时页
 保留给用户处理，Controller 不继续捕获也不写事实。
 
+主动搜索是同一条受控链路的批量入口，不改变事实和风控边界：
+
+```text
+用户给出关键词 + 城市
+  -> boss_watch_boss_search_preview 生成固定计划
+  -> 用户确认精确计划（最多 2 页、最多 5 个岗位）
+  -> boss_watch_boss_search_run
+  -> Controller 只生成 zhipin.com/web/geek/job 搜索页
+  -> 每页读取可见卡片，按 externalJobId 跨页去重
+  -> 详情页串行打开、复用 JOB_INSPECTION_EXPRESSION、成功后关页
+  -> 返回 captured/failed 部分结果；登录、验证、风控、断连立即停止
+```
+
+搜索入口不接受任意 URL、CSS、JavaScript 或 target；它不是 stealth 爬虫，也不承诺匿名访问、反检测或
+生产级吞吐。默认执行仍依赖用户已登录的本地 Chrome 和 BossHunter CDP Runtime。
+
 ## 4.3 多来源岗位发现与归一化
 
 岗位发现和岗位投递必须分成两个阶段：来源只负责提供可追溯的 `JobLead` 线索，投递前必须重新
@@ -275,6 +291,15 @@ overview 的推荐动作只是导航建议，不是 Gate A、Gate B 或外部动
 Hosted API 必须复用 `JobLeadSearchSource` 契约，作为 GankInterview 的并列适配器，而不是让个人版运行时依赖
 某个中心服务。免费额度、请求配额和“1 元”收费的计费单位尚未定义；在来源许可、更新成本、滥用控制和
 闭环留存得到实际数据前，不实现支付或把价格写入公开接口。
+
+### 4.3.7 微信内推群与手机同步边界
+
+微信内推群可以作为补充的 `MessageSource`，但当前版本不读取微信数据库、通知推送或群聊后台，也不通过
+Tailscale 绕过手机权限。未来若用户主动在手机端复制或导出一段内推信息，可进入与腾讯剪贴板相同的
+`message_source_preview -> explicit_apply` 流程，最小字段为
+`sourceRecordId/company/role/cohort/channelUrl/referralCode/rawRef/contentHash`，初始置信度只能是
+`source_only`。Tailscale 只解决用户设备到本地服务的网络可达性，不授予读取微信或自动发送消息的权限；
+二维码、登录、群风控和外部沟通始终由用户处理。
 
 ## 4.4 岗位匹配与 Gate A
 

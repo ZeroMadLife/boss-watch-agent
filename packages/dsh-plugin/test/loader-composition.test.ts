@@ -60,7 +60,10 @@ test('registers read-only tools through a real Cordis Loader composition', async
       'boss_watch_apply_batch_resume',
       'boss_watch_apply_batch_status',
       'boss_watch_apply_preview',
+      'boss_watch_boss_search_preview',
+      'boss_watch_boss_search_run',
       'boss_watch_browser_status',
+      'boss_watch_candidate_board',
       'boss_watch_capture_current_conversation',
       'boss_watch_capture_current_job',
       'boss_watch_capture_discovered_job',
@@ -113,7 +116,10 @@ test('registers read-only tools through a real Cordis Loader composition', async
     assert.deepEqual((await context.skills.list()).map(skill => skill.name), ['boss-watch-job-search'])
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_job_list/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_workspace_overview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_candidate_board/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_discover_jobs/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_boss_search_preview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_boss_search_run/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_capture_discovered_job/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_capture_current_job/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_capture_current_conversation/u)

@@ -242,6 +242,40 @@ describe("Browser Controller local API", () => {
     }
   });
 
+  it("runs a bounded keyword search only through the service-token API", async () => {
+    const server = createLocalApiServer({
+      databasePath: await databasePath(),
+      pairingCode: "123456",
+      runtimeMode: "baseline_ready",
+      browserRuntime: listBrowserRuntime(),
+      serviceToken,
+      now: () => new Date("2026-08-17T03:00:00.000Z"),
+    });
+
+    try {
+      const address = await server.start({ port: 0 });
+      const unauthorized = await fetch(`${address.origin}/api/v1/browser/jobs/search`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ keyword: "agent", city: "上海" }),
+      });
+      const searched = await fetch(`${address.origin}/api/v1/browser/jobs/search`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${serviceToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ keyword: "agent", city: "上海", maxPages: 1, maxJobs: 1 }),
+      });
+      expect(unauthorized.status).toBe(401);
+      expect(searched.status).toBe(200);
+      expect(await searched.json()).toMatchObject({
+        status: "ok",
+        plan: { keyword: "agent", city: "上海", maxPages: 1, maxJobs: 1 },
+        items: [{ status: "captured", job: { externalJobId: "fixture-api-discovered-001" } }],
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("polls a previously captured application without accepting a caller-supplied URL", async () => {
     const newTab = vi.fn(async () => "target-watch-api");
     const runtime = browserRuntime();

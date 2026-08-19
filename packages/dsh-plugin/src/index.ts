@@ -24,6 +24,8 @@ import { registerBossWatchTools } from './tools.js'
 import { SqliteBossWatchDataSource } from './sqlite-source.js'
 import { registerBossWatchSkill } from './skill.js'
 import { LocalWorkspaceOverviewService } from './workspace-overview.js'
+import { LocalCandidateBoardService } from './candidate-board.js'
+import { LocalBossJobSearchService } from './boss-job-search.js'
 
 export const name = 'boss-watch-dsh-plugin'
 export const inject = ['tools', 'skills']
@@ -136,9 +138,13 @@ export function apply(ctx: Context): void {
       visualImport: visualImportService !== undefined,
     },
   })
+  const candidateBoard = leadStore === undefined
+    ? undefined
+    : new LocalCandidateBoardService({ source, leads: leadStore })
+  const bossJobSearch = new LocalBossJobSearchService({ browser })
   ctx.effect(
     () => {
-      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview)
+      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch)
       const disposeSkill = registerBossWatchSkill(ctx)
       return () => {
         disposeSkill()
@@ -174,6 +180,8 @@ export { LocalInterviewNoteClient } from './interview-note-client.js'
 export { LocalProgressSignalClient } from './progress-signal-client.js'
 export { LocalResumeMatchingService } from './resume-matching.js'
 export { LocalWorkspaceOverviewService } from './workspace-overview.js'
+export { LocalCandidateBoardService } from './candidate-board.js'
+export { LocalBossJobSearchService } from './boss-job-search.js'
 export { evaluateResumeMatchGold } from './resume-match-eval.js'
 export { BOSS_WATCH_SKILL } from './skill.js'
 export type * from './domain.js'

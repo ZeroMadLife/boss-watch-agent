@@ -7,6 +7,8 @@ or copied into this repository.
 DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和受控浏览器工具：
 
 - `boss_watch_workspace_overview`：只读汇总当前闭环阶段、简历/候选/JD/Feishu 计数、可用来源和下一步；不刷新任何来源；
+- `boss_watch_candidate_board`：只读汇总 Gank/Tencent `JobLead` 与 BOSS 已捕获 JD；保留来源事实边界，不写 Feishu；
+- `boss_watch_boss_search_preview` / `boss_watch_boss_search_run`：先预览再确认执行固定关键词/城市搜索；最多 2 页/5 个岗位，跨页按岗位 ID 去重、详情串行捕获，遇到登录/验证码/风控/断连立即 handoff；
 - `boss_watch_job_list`：列出已捕获 JD；
 - `boss_watch_job_get`：查看单个 JD 原文和哈希；
 - `boss_watch_application_timeline`：查看追加式投递事件；
