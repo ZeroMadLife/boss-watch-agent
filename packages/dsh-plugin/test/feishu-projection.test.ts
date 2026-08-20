@@ -9,6 +9,7 @@ const fields: readonly FeishuField[] = [
   { id: 'fld-role', name: '岗位名称', type: 'text', styleType: 'plain', options: [] },
   { id: 'fld-url', name: '岗位链接', type: 'text', styleType: 'url', options: [] },
   { id: 'fld-status', name: '当前进度', type: 'select', multiple: false, options: [{ name: '候选待评估' }, { name: '已投递' }] },
+  { id: 'fld-applied-at', name: '投递时间', type: 'datetime', options: [] },
   { id: 'fld-note', name: '备注', type: 'text', styleType: 'plain', options: [] },
 ]
 
@@ -17,6 +18,8 @@ class FakeFeishuClient implements FeishuClient {
   schema = fields
   createCalls = 0
   updateCalls = 0
+  recoverCalls = 0
+  failCreateAfterWrite = false
   lastCreateIdentityFieldIds: readonly string[] | undefined
   resolveUrl(): Promise<{ baseToken: string; title: string; tableId: string; viewId: string }> {
     return Promise.resolve({
@@ -46,7 +49,13 @@ class FakeFeishuClient implements FeishuClient {
   createRecord(input: { identityFieldIds?: readonly string[] }): Promise<{ recordId: string }> {
     this.createCalls += 1
     this.lastCreateIdentityFieldIds = input.identityFieldIds
+    if (this.failCreateAfterWrite) return Promise.reject(new Error('feishu_write_record_not_found_after_create'))
     return Promise.resolve({ recordId: `rec-created-${this.createCalls}` })
+  }
+
+  recoverCreatedRecord(): Promise<{ recordId: string }> {
+    this.recoverCalls += 1
+    return Promise.resolve({ recordId: 'rec-recovered' })
   }
 
   updateRecord(input: { recordId: string }): Promise<{ recordId: string }> {
@@ -55,7 +64,9 @@ class FakeFeishuClient implements FeishuClient {
   }
 }
 
-function createSource(): BossWatchDataSource {
+type FixtureStatus = 'new' | 'submitted' | 'proposed' | 'forged_confirmation'
+
+function createSource(status: FixtureStatus = 'new'): BossWatchDataSource {
   const job: JobDetails = {
     applicationId: 'application-test-1',
     company: '示例公司',
@@ -68,27 +79,54 @@ function createSource(): BossWatchDataSource {
   }
   const overview: ApplicationOverview = {
     ...job,
-    progressState: 'new',
+    progressState: status === 'submitted' || status === 'forged_confirmation'
+      ? 'status_confirmed'
+      : status === 'proposed' ? 'status_proposed' : 'new',
     eventCount: 1,
     recruiterMessageCount: 0,
     interviewNoteCount: 0,
     progressSignalCount: 0,
     latestEventType: 'job_description_captured',
     latestEventAt: job.capturedAt,
+    ...status === 'submitted' || status === 'forged_confirmation' ? { confirmedStatus: 'submitted' } : {},
+    ...status === 'proposed' ? { proposedStatus: 'submitted' } : {},
   }
   return {
     async listJobs() { return [] },
     async listApplicationOverviews() { return [overview] },
     async getApplicationOverview(applicationId) { return applicationId === job.applicationId ? overview : undefined },
     async getJob(applicationId) { return applicationId === job.applicationId ? job : undefined },
-    async listTimeline() { return [] },
+    async listTimeline() {
+      if (status === 'submitted' || status === 'forged_confirmation') return [{
+        sequence: 2,
+        eventId: 'event-submitted',
+        applicationId: job.applicationId,
+        type: 'status_change_confirmed',
+        occurredAt: '2026-08-18T02:30:00.000Z',
+        actor: status === 'submitted' ? 'human' : 'agent',
+        payload: { to: 'submitted', source: 'user_manual_confirmation' },
+      }]
+      if (status === 'proposed') return [{
+        sequence: 2,
+        eventId: 'event-proposed',
+        applicationId: job.applicationId,
+        type: 'status_change_proposed',
+        occurredAt: '2026-08-18T02:30:00.000Z',
+        actor: 'agent',
+        payload: { to: 'submitted', evidenceEventIds: ['event-signal'] },
+      }]
+      return []
+    },
   }
 }
 
-async function setup(): Promise<{ service: LocalFeishuProjectionService; client: FakeFeishuClient; store: SqliteFeishuTargetStore }> {
+async function setup(
+  status: FixtureStatus = 'new',
+  source?: BossWatchDataSource,
+): Promise<{ service: LocalFeishuProjectionService; client: FakeFeishuClient; store: SqliteFeishuTargetStore }> {
   const client = new FakeFeishuClient()
   const store = new SqliteFeishuTargetStore(':memory:')
-  const service = new LocalFeishuProjectionService({ client, store, source: createSource() })
+  const service = new LocalFeishuProjectionService({ client, store, source: source ?? createSource(status) })
   return { service, client, store }
 }
 
@@ -124,6 +162,97 @@ test('previews create and applies one projection idempotently', async () => {
     assert.deepEqual(repeated, applied)
     assert.equal(client.createCalls, 1)
     assert.equal(store.getProjection(target.targetId, 'application-test-1')?.remoteRecordId, 'rec-created-1')
+    assert.deepEqual(store.listProjections({ applicationId: 'application-test-1' }), [
+      store.getProjection(target.targetId, 'application-test-1'),
+    ])
+  } finally {
+    store.close()
+  }
+})
+
+test('recovers an uncertain create without issuing a second remote create', async () => {
+  const { service, client, store } = await setup()
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.syncPreview(target.targetId, ['application-test-1'])
+    client.failCreateAfterWrite = true
+
+    await assert.rejects(() => service.syncApply(preview.previewToken, true), /feishu_write_record_not_found_after_create/u)
+    client.failCreateAfterWrite = false
+    const recovered = await service.syncApply(preview.previewToken, true)
+
+    assert.equal(client.createCalls, 1)
+    assert.equal(client.recoverCalls, 1)
+    assert.deepEqual(recovered.counts, { created: 1, updated: 0, unchanged: 0 })
+    assert.equal(store.getProjection(target.targetId, 'application-test-1')?.remoteRecordId, 'rec-recovered')
+  } finally {
+    store.close()
+  }
+})
+
+test('projects only a user-confirmed submitted status and its observed application time', async () => {
+  const { service, store } = await setup('submitted')
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.syncPreview(target.targetId, ['application-test-1'])
+
+    assert.equal(preview.items[0]?.fields?.['fld-status'], '已投递')
+    assert.equal(preview.items[0]?.fields?.['fld-applied-at'], '2026-08-18T02:30:00.000Z')
+  } finally {
+    store.close()
+  }
+})
+
+test('treats Feishu datetime offsets representing the same instant as unchanged', async () => {
+  const { service, client, store } = await setup('submitted')
+  try {
+    client.records = [{
+      recordId: 'rec-submitted',
+      fields: {
+        'fld-company': '示例公司',
+        'fld-role': '后端工程师',
+        'fld-url': '[查看岗位](https://careers.example.invalid/jobs/1)',
+        'fld-status': '已投递',
+        'fld-applied-at': '2026-08-18T10:30:00.000+08:00',
+        'fld-note': 'JD摘要：负责服务端开发和 Agent 工程化。',
+      },
+    }]
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.syncPreview(target.targetId, ['application-test-1'])
+
+    assert.equal(preview.items[0]?.action, 'unchanged')
+    assert.equal(preview.items[0]?.diffs, undefined)
+  } finally {
+    store.close()
+  }
+})
+
+test('does not project an agent-proposed status as an application fact', async () => {
+  const { service, store } = await setup('proposed')
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.syncPreview(target.targetId, ['application-test-1'])
+
+    assert.equal(preview.items[0]?.fields?.['fld-status'], undefined)
+    assert.equal(preview.items[0]?.fields?.['fld-applied-at'], undefined)
+  } finally {
+    store.close()
+  }
+})
+
+test('does not project an agent event that forges the manual-confirmation payload', async () => {
+  const { service, store } = await setup('forged_confirmation')
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.syncPreview(target.targetId, ['application-test-1'])
+
+    assert.equal(preview.items[0]?.fields?.['fld-status'], undefined)
+    assert.equal(preview.items[0]?.fields?.['fld-applied-at'], undefined)
   } finally {
     store.close()
   }
@@ -200,6 +329,32 @@ test('rejects applying a preview after the target schema changes', async () => {
     const preview = await service.syncPreview(target.targetId, ['application-test-1'])
     client.schema = [...fields, { id: 'fld-extra', name: '新字段', type: 'text', options: [] }]
     await assert.rejects(() => service.syncApply(preview.previewToken, true), /feishu_schema_changed/u)
+  } finally {
+    store.close()
+  }
+})
+
+test('rejects the entire apply before writing when local facts change after preview', async () => {
+  const base = createSource()
+  let currentRole = '后端工程师'
+  const mutableSource: BossWatchDataSource = {
+    ...base,
+    async getJob(applicationId) {
+      const job = await base.getJob(applicationId)
+      return job === undefined ? undefined : { ...job, role: currentRole }
+    },
+  }
+  const { service, client, store } = await setup('new', mutableSource)
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.syncPreview(target.targetId, ['application-test-1'])
+    currentRole = 'Agent 平台工程师'
+
+    await assert.rejects(() => service.syncApply(preview.previewToken, true), /feishu_preview_stale/u)
+    assert.equal(client.createCalls, 0)
+    assert.equal(client.updateCalls, 0)
+    assert.equal(store.getProjection(target.targetId, 'application-test-1'), undefined)
   } finally {
     store.close()
   }

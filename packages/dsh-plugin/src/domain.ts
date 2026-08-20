@@ -30,6 +30,7 @@ export type ProgressState =
   | 'interview_notes'
   | 'signal_needs_review'
   | 'status_proposed'
+  | 'status_confirmed'
 
 export interface ApplicationOverview extends JobSummary {
   readonly progressState: ProgressState
@@ -40,6 +41,8 @@ export interface ApplicationOverview extends JobSummary {
   readonly latestEventType: string
   readonly latestEventAt: string
   readonly proposedStatus?: string
+  readonly confirmedStatus?: string
+  readonly confirmedAt?: string
 }
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { readonly [key: string]: JsonValue }
@@ -72,7 +75,7 @@ export type BrowserStatus =
     }
   | {
       readonly status: 'human_required'
-      readonly reason: 'login' | 'verification'
+      readonly reason: 'login' | 'verification' | 'risk_control'
       readonly targetCount: number
     }
   | {
@@ -86,6 +89,23 @@ export interface BrowserTarget {
   readonly title?: string
   readonly url: string
 }
+
+export type BrowserSearchGuardStatus =
+  | {
+      readonly state: 'ready'
+      readonly guarded: false
+      readonly observedAt: string
+      readonly scope: 'controller_process'
+      readonly resetsOnRestart: true
+    }
+  | {
+      readonly state: 'search_in_progress' | 'search_cooldown' | 'risk_cooldown'
+      readonly guarded: true
+      readonly retryAfterMs: number
+      readonly observedAt: string
+      readonly scope: 'controller_process'
+      readonly resetsOnRestart: true
+    }
 
 export interface BrowserJobSummary {
   readonly externalJobId: string
@@ -143,6 +163,7 @@ export type BrowserApplicationFormInspection =
       }
       readonly fields: readonly BrowserApplicationFormField[]
     }
+
   | {
       readonly status: 'no_supported_tab'
       readonly reason: 'official_page_not_open' | 'no_application_form'
@@ -174,6 +195,34 @@ export type BrowserApplicationFormInspection =
       readonly targetCount: 0
     }
 
+export interface BrowserApplicationFormFillInput {
+  readonly expectedUrl: string
+  readonly expectedFormHash: string
+  readonly fields: readonly {
+    readonly fieldId: string
+    readonly value: string
+  }[]
+}
+
+export type BrowserApplicationFormFill =
+  | Exclude<BrowserApplicationFormInspection, { readonly status: 'ready' }>
+  | {
+      readonly status: 'conflict'
+      readonly reason: 'form_changed' | 'field_state_changed' | 'fill_plan_mismatch'
+      readonly targetCount: 1
+      readonly currentFormHash?: string
+    }
+  | {
+      readonly status: 'filled'
+      readonly targetCount: 1
+      readonly page: Extract<BrowserApplicationFormInspection, { readonly status: 'ready' }>['page']
+      readonly formHash: string
+      readonly filledFieldIds: readonly string[]
+      readonly filledCount: number
+      readonly requiresHumanReview: true
+      readonly submitted: false
+    }
+
 export type BrowserJobDiscovery =
   | {
       readonly status: 'ready'
@@ -198,7 +247,7 @@ export type BrowserJobDiscovery =
     }
   | {
       readonly status: 'human_required'
-      readonly reason: 'login' | 'verification'
+      readonly reason: 'login' | 'verification' | 'risk_control'
       readonly targetCount: number
     }
   | {
@@ -254,6 +303,15 @@ export type BrowserJobSearchResult =
       readonly items: readonly BrowserJobSearchItem[]
     }
   | {
+      readonly status: 'guarded'
+      readonly reason: 'search_in_progress' | 'search_cooldown' | 'risk_cooldown'
+      readonly retryAfterMs: number
+      readonly targetCount: 0
+      readonly plan: Required<BrowserJobSearchInput>
+      readonly pagesVisited: 0
+      readonly items: readonly []
+    }
+  | {
       readonly status: 'invalid_request'
       readonly reason: string
       readonly targetCount: 0
@@ -280,7 +338,7 @@ export type BrowserConversationCapture =
     }
   | {
       readonly status: 'human_required'
-      readonly reason: 'login' | 'verification'
+      readonly reason: 'login' | 'verification' | 'risk_control'
       readonly targetCount: number
     }
   | {
@@ -324,6 +382,7 @@ export type BrowserWatchPoll = BrowserCapture | {
 
 export interface BossWatchBrowserController {
   status(): Promise<BrowserStatus>
+  searchGuardStatus?(): Promise<BrowserSearchGuardStatus>
   captureCurrentJob(): Promise<BrowserCapture>
   captureCurrentConversation?(applicationId: string): Promise<BrowserConversationCapture>
   discoverJobs(): Promise<BrowserJobDiscovery>
@@ -331,4 +390,5 @@ export interface BossWatchBrowserController {
   captureDiscoveredJob(discoveryId: string, externalJobId: string): Promise<BrowserDiscoveredCapture>
   pollJob(applicationId: string): Promise<BrowserWatchPoll>
   inspectApplicationForm(expectedUrl: string): Promise<BrowserApplicationFormInspection>
+  fillApplicationForm?(input: BrowserApplicationFormFillInput): Promise<BrowserApplicationFormFill>
 }

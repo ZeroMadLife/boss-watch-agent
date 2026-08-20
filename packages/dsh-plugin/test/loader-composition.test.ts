@@ -12,6 +12,9 @@ import SkillRegistry from '@deepseek-ai/dsh-skill'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as BossWatchPlugin from '../src/index.ts'
+import { SqliteJobLeadStore } from '../src/job-lead.ts'
+import { SqliteResumeVersionStore } from '../src/resume-version.ts'
+import { SqliteApplicationStore } from '../../../src/storage/sqlite-application-store.ts'
 
 test('registers read-only tools through a real Cordis Loader composition', async () => {
   const root = await mkdtemp(join(tmpdir(), 'boss-watch-dsh-loader-'))
@@ -55,6 +58,8 @@ test('registers read-only tools through a real Cordis Loader composition', async
       'boss_watch_application_form_preview',
       'boss_watch_application_list',
       'boss_watch_application_overview',
+      'boss_watch_application_status_apply',
+      'boss_watch_application_status_preview',
       'boss_watch_application_timeline',
       'boss_watch_apply_batch_prepare',
       'boss_watch_apply_batch_resume',
@@ -76,6 +81,7 @@ test('registers read-only tools through a real Cordis Loader composition', async
       'boss_watch_follow_up_complete',
       'boss_watch_follow_up_list',
       'boss_watch_follow_up_schedule',
+      'boss_watch_gate_a_confirm',
       'boss_watch_interview_note_apply',
       'boss_watch_interview_note_preview',
       'boss_watch_jd_diff',
@@ -95,11 +101,18 @@ test('registers read-only tools through a real Cordis Loader composition', async
       'boss_watch_lead_visual_preview',
       'boss_watch_progress_signal_apply',
       'boss_watch_progress_signal_preview',
+      'boss_watch_recruitment_jd_apply',
+      'boss_watch_recruitment_jd_preview',
+      'boss_watch_recruitment_source_apply',
+      'boss_watch_recruitment_source_get',
+      'boss_watch_recruitment_source_list',
+      'boss_watch_recruitment_source_preview',
       'boss_watch_resume_get',
       'boss_watch_resume_import_apply',
       'boss_watch_resume_import_preview',
       'boss_watch_resume_list',
       'boss_watch_resume_match',
+      'boss_watch_resume_match_list',
       'boss_watch_source_status',
       'boss_watch_watch_create',
       'boss_watch_watch_list',
@@ -129,17 +142,25 @@ test('registers read-only tools through a real Cordis Loader composition', async
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_batch_resume/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_form_preview/u)
+    assert.doesNotMatch((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_form_fill_apply/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_resume_import_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_resume_list/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_resume_match_list/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_follow_up_list/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_follow_up_schedule/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_follow_up_complete/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_status_preview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_status_apply/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_gate_a_confirm/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_lead_import_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_lead_import_apply/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_lead_clipboard_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_lead_clipboard_apply/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_lead_visual_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_lead_visual_apply/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_recruitment_source_preview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_recruitment_jd_preview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_recruitment_jd_apply/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_feishu_target_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_feishu_target_confirm/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_feishu_sync_preview/u)
@@ -171,6 +192,118 @@ test('registers read-only tools through a real Cordis Loader composition', async
     })
     assert.equal(result.isError, false)
     assert.match(result.content.map(block => block.type === 'text' ? block.text : '').join(''), /source_unavailable/u)
+  } finally {
+    await context?.fiber.dispose()
+    if (previousDatabasePath === undefined) delete process.env.BOSS_WATCH_DB_PATH
+    else process.env.BOSS_WATCH_DB_PATH = previousDatabasePath
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('wires local resume readiness into the runtime candidate board', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-watch-dsh-loader-board-'))
+  const configPath = join(root, 'cordis.yml')
+  const databasePath = join(root, 'boss-watch.sqlite3')
+  const previousDatabasePath = process.env.BOSS_WATCH_DB_PATH
+  process.env.BOSS_WATCH_DB_PATH = databasePath
+  const applicationStore = new SqliteApplicationStore(databasePath)
+  applicationStore.close()
+  const leads = new SqliteJobLeadStore(databasePath)
+  const resumes = new SqliteResumeVersionStore(databasePath)
+  let context: Context | undefined
+
+  try {
+    leads.upsert([{
+      leadId: 'lead:company_career_site:runtime-fixture',
+      sourceKind: 'company_career_site',
+      sourceRecordId: 'runtime-fixture',
+      company: '虚构远航科技',
+      role: '平台研发工程师',
+      officialApplyUrl: 'https://careers.example.invalid/jobs/runtime-fixture',
+      fetchedAt: '2026-08-19T04:00:00.000Z',
+      rawRef: 'company-career-site://runtime-fixture',
+      contentHash: 'a'.repeat(64),
+      confidence: 'human_confirmed',
+    }])
+    resumes.save({
+      resumeVersionId: `resume-version:${'b'.repeat(64)}`,
+      displayName: '虚构候选人-平台方向',
+      localArtifactRef: `local-resume://sha256:${'b'.repeat(64)}`,
+      contentHash: 'b'.repeat(64),
+      mediaType: 'application/pdf',
+      byteSize: 2048,
+      createdAt: '2026-08-19T04:05:00.000Z',
+    })
+    leads.close()
+    resumes.close()
+    await writeFile(configPath, [
+      "- name: '@deepseek-ai/dsh-system-prompt'",
+      "- name: '@deepseek-ai/dsh-tools'",
+      "- name: '@deepseek-ai/dsh-skill'",
+      '- name: boss-watch-dsh-plugin',
+      '',
+    ].join('\n'))
+
+    context = new Context()
+    context.baseUrl = `${pathToFileURL(root).href}/`
+    await context.plugin(Loader)
+    context.loader.builtins.include = Include
+    const modules = new Map<string, unknown>([
+      ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
+      ['@deepseek-ai/dsh-tools', ToolRuntime],
+      ['@deepseek-ai/dsh-skill', SkillRegistry],
+      ['boss-watch-dsh-plugin', BossWatchPlugin],
+    ])
+    context.loader.internal = {
+      version: 'v2',
+      async import(specifier: string) {
+        const module = modules.get(specifier)
+        if (module === undefined) throw new Error(`unexpected Loader import: ${specifier}`)
+        return module
+      },
+    } as unknown as NonNullable<typeof context.loader.internal>
+
+    await context.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
+    await context.loader.await()
+    const result = await context.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('candidate-board-runtime'),
+      name: 'boss_watch_candidate_board',
+      arguments: {},
+    })
+    const text = result.content.map(block => block.type === 'text' ? block.text : '').join('')
+    assert.equal(result.isError, false)
+    assert.match(text, /"resumeReady":true/u)
+    assert.match(text, /"nextAction":"prepare_application"/u)
+
+    const sourcePreviewResult = await context.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('recruitment-source-preview'),
+      name: 'boss_watch_recruitment_source_preview',
+      arguments: {
+        rawText: '虚构星河科技\n内推链接：https://careers.example.invalid/referral/fixture\n内推码：FIXTURE-27',
+      },
+    })
+    const sourcePreview = JSON.parse(sourcePreviewResult.content.map(block => block.type === 'text' ? block.text : '').join('')) as {
+      status: string
+      preview: { previewToken: string; source: { company: string } }
+    }
+    assert.equal(sourcePreview.status, 'ok')
+    assert.equal(sourcePreview.preview.source.company, '虚构星河科技')
+
+    const sourceApplyResult = await context.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId('recruitment-source-apply'),
+      name: 'boss_watch_recruitment_source_apply',
+      arguments: {
+        previewToken: sourcePreview.preview.previewToken,
+        confirmation: '确认公司、链接、内推码和哈希',
+      },
+    })
+    assert.match(
+      sourceApplyResult.content.map(block => block.type === 'text' ? block.text : '').join(''),
+      /"status":"source_only"/u,
+    )
   } finally {
     await context?.fiber.dispose()
     if (previousDatabasePath === undefined) delete process.env.BOSS_WATCH_DB_PATH

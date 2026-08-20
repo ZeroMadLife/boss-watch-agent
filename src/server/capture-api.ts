@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { basename, dirname, extname, resolve } from "node:path";
 import { convert as htmlToText } from "html-to-text";
 import PostalMime, { type Email } from "postal-mime";
@@ -13,6 +14,7 @@ import { parseConversationPageSnapshot, parseJobPageSnapshot } from "../capture/
 import { type ApplicationArtifactInput, applicationArtifactRef } from "../domain/application-artifact.js";
 import type {
   ApplicationEvent,
+  ApplicationStatus,
   ProgressSignalOutcome,
   ProgressSignalSourceKind,
   StoredApplicationEvent,
@@ -30,6 +32,15 @@ export interface CaptureResult {
   contentHash: string;
   savedAt: string;
   deduplicated: boolean;
+}
+
+interface OfficialJobCaptureInput {
+  readonly sourceId: string;
+  readonly company: string;
+  readonly role: string;
+  readonly officialJobUrl: string;
+  readonly jdText: string;
+  readonly capturedAt: string;
 }
 
 interface AnalysisRequest {
@@ -125,6 +136,47 @@ interface AppliedProgressSignal {
   readonly expiresAt: number;
 }
 
+export type ManuallyConfirmableApplicationStatus = Extract<
+  ApplicationStatus,
+  | "submitted"
+  | "assessment_scheduled"
+  | "assessment_completed"
+  | "interview_scheduled"
+  | "rejected"
+  | "offer"
+  | "closed"
+>;
+
+export interface ApplicationStatusPreview {
+  readonly previewToken: string;
+  readonly applicationId: string;
+  readonly status: ManuallyConfirmableApplicationStatus;
+  readonly occurredAt: string;
+  readonly expiresAt: string;
+  readonly requiresConfirmation: true;
+  readonly externalAction: "not_performed";
+}
+
+export interface ApplicationStatusApplyResult {
+  readonly applicationId: string;
+  readonly eventId: string;
+  readonly status: ManuallyConfirmableApplicationStatus;
+  readonly recordedAt: string;
+  readonly deduplicated: boolean;
+}
+
+interface PendingApplicationStatus {
+  readonly applicationId: string;
+  readonly status: ManuallyConfirmableApplicationStatus;
+  readonly occurredAt: string;
+  readonly expiresAt: number;
+}
+
+interface AppliedApplicationStatus {
+  readonly result: ApplicationStatusApplyResult;
+  readonly expiresAt: number;
+}
+
 export type PiConversationAnalyzer = (input: {
   conversationId: string;
   messageId: string;
@@ -142,6 +194,8 @@ export class CaptureApi {
   readonly #interviewNoteApplied = new Map<string, AppliedInterviewNote>();
   readonly #progressSignalPreviews = new Map<string, PendingProgressSignal>();
   readonly #progressSignalApplied = new Map<string, AppliedProgressSignal>();
+  readonly #applicationStatusPreviews = new Map<string, PendingApplicationStatus>();
+  readonly #applicationStatusApplied = new Map<string, AppliedApplicationStatus>();
 
   constructor(options: {
     store: SqliteApplicationStore;
@@ -210,6 +264,62 @@ export class CaptureApi {
       },
     } satisfies ApplicationArtifactInput;
     const record = await this.#appendWithConcurrentReplay(event, artifact, snapshot.pageRevision);
+    return captureResult(record, false);
+  }
+
+  async captureOfficialJob(value: unknown): Promise<CaptureResult> {
+    const input = parseOfficialJobCapture(value);
+    this.#validateCaptureTime(input.capturedAt);
+    const externalJobId = `official:${sha256(
+      [input.sourceId, input.company, input.role, input.officialJobUrl].join("\u0000"),
+    )}`;
+    const applicationId = this.#store.resolveOrCreateApplicationSource(
+      "official_portal",
+      externalJobId,
+      `application-${randomUUID()}`,
+      input.capturedAt,
+    );
+    const contentHash = sha256(input.jdText);
+    const idempotencyKey = `official:job:${externalJobId}:${contentHash}`;
+    const existing = this.#store.getRecordByIdempotencyKey(applicationId, idempotencyKey);
+    if (existing !== undefined) return captureResult(existing, true);
+
+    const artifactId = `artifact-${randomUUID()}`;
+    const event: Extract<ApplicationEvent, { type: "job_description_captured" }> = {
+      schemaVersion: 1,
+      eventId: `event-${randomUUID()}`,
+      applicationId,
+      idempotencyKey,
+      traceId: input.sourceId,
+      occurredAt: input.capturedAt,
+      actor: "human",
+      type: "job_description_captured",
+      payload: {
+        platform: "official_portal",
+        externalJobId,
+        company: input.company,
+        role: input.role,
+        jobUrl: input.officialJobUrl,
+        contentHash,
+        artifactRef: applicationArtifactRef(artifactId),
+      },
+    };
+    const artifact = {
+      artifactId,
+      applicationId,
+      kind: "job_description",
+      content: input.jdText,
+      createdAt: input.capturedAt,
+      metadata: {
+        sourceId: input.sourceId,
+        sourceUrl: input.officialJobUrl,
+        pageRevision: contentHash,
+        company: input.company,
+        role: input.role,
+        externalJobId,
+      },
+    } satisfies ApplicationArtifactInput;
+    const record = await this.#appendWithConcurrentReplay(event, artifact, contentHash);
     return captureResult(record, false);
   }
 
@@ -520,6 +630,65 @@ export class CaptureApi {
     return result;
   }
 
+  previewApplicationStatus(value: unknown): ApplicationStatusPreview {
+    const input = parseApplicationStatusInput(value, this.#now().toISOString());
+    if (!this.#store.hasApplication(input.applicationId)) throw new ApiError(404, "application_not_found");
+    this.#validateCaptureTime(input.occurredAt);
+    this.#pruneApplicationStatusPreviews();
+    const previewToken = `application-status-preview:${randomUUID()}`;
+    const expiresAt = this.#now().getTime() + 15 * 60 * 1000;
+    this.#applicationStatusPreviews.set(previewToken, { ...input, expiresAt });
+    return {
+      previewToken,
+      applicationId: input.applicationId,
+      status: input.status,
+      occurredAt: input.occurredAt,
+      expiresAt: new Date(expiresAt).toISOString(),
+      requiresConfirmation: true,
+      externalAction: "not_performed",
+    };
+  }
+
+  async applyApplicationStatus(value: unknown): Promise<ApplicationStatusApplyResult> {
+    if (
+      !isRecord(value) ||
+      typeof value.previewToken !== "string" ||
+      value.previewToken.trim().length === 0
+    ) {
+      throw new ApiError(400, "invalid_application_status_apply");
+    }
+    if (value.confirmed !== true) throw new ApiError(409, "confirmation_required");
+    this.#pruneApplicationStatusPreviews();
+    const applied = this.#applicationStatusApplied.get(value.previewToken);
+    if (applied !== undefined) return { ...applied.result, deduplicated: true };
+    const pending = this.#applicationStatusPreviews.get(value.previewToken);
+    if (pending === undefined) throw new ApiError(404, "application_status_preview_not_found");
+    if (!this.#store.hasApplication(pending.applicationId)) throw new ApiError(404, "application_not_found");
+    const identityHash = sha256(`${pending.applicationId}\u0000${pending.status}\u0000${pending.occurredAt}`);
+    const event: Extract<ApplicationEvent, { type: "status_change_confirmed" }> = {
+      schemaVersion: 1,
+      eventId: `event-${randomUUID()}`,
+      applicationId: pending.applicationId,
+      idempotencyKey: `manual-status:${pending.status}:${pending.occurredAt}`,
+      traceId: `manual-status:${identityHash}`,
+      occurredAt: pending.occurredAt,
+      actor: "human",
+      type: "status_change_confirmed",
+      payload: { to: pending.status, source: "user_manual_confirmation" },
+    };
+    const stored = await this.#store.append(event);
+    const result: ApplicationStatusApplyResult = {
+      applicationId: pending.applicationId,
+      eventId: stored.eventId,
+      status: pending.status,
+      recordedAt: stored.occurredAt,
+      deduplicated: stored.eventId !== event.eventId,
+    };
+    this.#applicationStatusPreviews.delete(value.previewToken);
+    this.#applicationStatusApplied.set(value.previewToken, { result, expiresAt: pending.expiresAt });
+    return result;
+  }
+
   async analyzeConversation(value: unknown): Promise<{
     mode: "pi" | "baseline";
     eventId: string;
@@ -626,6 +795,16 @@ export class CaptureApi {
       if (applied.expiresAt <= now) this.#progressSignalApplied.delete(token);
     }
   }
+
+  #pruneApplicationStatusPreviews(): void {
+    const now = this.#now().getTime();
+    for (const [token, preview] of this.#applicationStatusPreviews) {
+      if (preview.expiresAt <= now) this.#applicationStatusPreviews.delete(token);
+    }
+    for (const [token, applied] of this.#applicationStatusApplied) {
+      if (applied.expiresAt <= now) this.#applicationStatusApplied.delete(token);
+    }
+  }
 }
 
 function captureResult(record: StoredApplicationRecord, deduplicated: boolean): CaptureResult {
@@ -646,6 +825,68 @@ function parseSnapshot<T>(parser: (value: unknown) => T, value: unknown): T {
   } catch (error) {
     throw new ApiError(400, error instanceof Error ? error.message : "invalid_snapshot");
   }
+}
+
+function parseOfficialJobCapture(value: unknown): OfficialJobCaptureInput {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError(400, "invalid_official_job_capture");
+  }
+  const record = value as Record<string, unknown>;
+  const sourceId = officialJobText(record.sourceId, "official_job_source_id_required", 256);
+  const company = officialJobText(record.company, "official_job_company_required", 200);
+  const role = officialJobText(record.role, "official_job_role_required", 240);
+  const jdText = officialJobText(record.jdText, "official_job_jd_required", 400 * 1024, false);
+  const capturedAt = officialJobText(record.capturedAt, "official_job_capture_time_required", 64);
+  if (!Number.isFinite(Date.parse(capturedAt))) throw new ApiError(400, "invalid_capture_timestamp");
+  return {
+    sourceId,
+    company,
+    role,
+    officialJobUrl: normalizeOfficialJobUrl(record.officialJobUrl),
+    jdText,
+    capturedAt,
+  };
+}
+
+function officialJobText(value: unknown, code: string, maxLength: number, collapseWhitespace = true): string {
+  if (typeof value !== "string") throw new ApiError(400, code);
+  const normalized = collapseWhitespace
+    ? Array.from(value.trim(), (character) => {
+        const codePoint = character.codePointAt(0);
+        return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f) ? " " : character;
+      })
+        .join("")
+        .replace(/\s+/gu, " ")
+    : value.replaceAll("\r\n", "\n").trim();
+  if (normalized.length === 0 || normalized.length > maxLength) throw new ApiError(400, code);
+  return normalized;
+}
+
+function normalizeOfficialJobUrl(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > 4096) {
+    throw new ApiError(400, "official_job_url_invalid");
+  }
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new ApiError(400, "official_job_url_invalid");
+  }
+  const hostname = url.hostname.toLowerCase();
+  if (
+    url.protocol !== "https:" ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    (url.port.length > 0 && url.port !== "443") ||
+    hostname.length === 0 ||
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname.endsWith(".local") ||
+    isIP(hostname) !== 0
+  ) {
+    throw new ApiError(400, "official_job_url_invalid");
+  }
+  return url.toString();
 }
 
 function parseAnalysisRequest(value: unknown): AnalysisRequest {
@@ -682,6 +923,34 @@ type ProgressSignalInput = {
   | { content: string; stagedFileName?: never; sourceHash?: never }
   | { stagedFileName: string; sourceHash: string; content?: never }
 );
+
+function parseApplicationStatusInput(
+  value: unknown,
+  defaultOccurredAt: string,
+): { applicationId: string; status: ManuallyConfirmableApplicationStatus; occurredAt: string } {
+  if (!isRecord(value)) throw new ApiError(400, "invalid_application_status");
+  const applicationId = stringField(value.applicationId, 256);
+  const statuses: ManuallyConfirmableApplicationStatus[] = [
+    "submitted",
+    "assessment_scheduled",
+    "assessment_completed",
+    "interview_scheduled",
+    "rejected",
+    "offer",
+    "closed",
+  ];
+  if (
+    applicationId === undefined ||
+    !statuses.includes(value.status as ManuallyConfirmableApplicationStatus)
+  ) {
+    throw new ApiError(400, "invalid_application_status");
+  }
+  const occurredAt = value.occurredAt === undefined ? defaultOccurredAt : stringField(value.occurredAt, 64);
+  if (occurredAt === undefined || !Number.isFinite(Date.parse(occurredAt))) {
+    throw new ApiError(400, "invalid_application_status_timestamp");
+  }
+  return { applicationId, status: value.status as ManuallyConfirmableApplicationStatus, occurredAt };
+}
 
 function parseInterviewNoteInput(value: unknown): InterviewNoteInput {
   if (!isRecord(value)) throw new ApiError(400, "invalid_interview_note");

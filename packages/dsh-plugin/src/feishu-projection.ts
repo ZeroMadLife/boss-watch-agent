@@ -60,6 +60,7 @@ export interface FeishuTargetStore {
   countTargets(): number
   getTarget(targetId: string): FeishuTarget | undefined
   getProjection(targetId: string, applicationId: string): FeishuProjection | undefined
+  listProjections(options?: { applicationId?: string; limit?: number }): FeishuProjection[]
   saveProjection(projection: FeishuProjection): FeishuProjection
   close(): void
 }
@@ -186,6 +187,21 @@ export class SqliteFeishuTargetStore implements FeishuTargetStore {
     return row === undefined ? undefined : fromProjectionRow(row)
   }
 
+  listProjections(options: { applicationId?: string; limit?: number } = {}): FeishuProjection[] {
+    this.#ensureOpen()
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 100)
+    const rows = options.applicationId === undefined
+      ? this.#database.prepare(`
+          SELECT target_id, application_id, remote_record_id, source_hash, projected_hash, projected_at, last_result
+          FROM feishu_projections ORDER BY projected_at DESC, target_id ASC LIMIT ?
+        `).all(limit)
+      : this.#database.prepare(`
+          SELECT target_id, application_id, remote_record_id, source_hash, projected_hash, projected_at, last_result
+          FROM feishu_projections WHERE application_id = ? ORDER BY projected_at DESC, target_id ASC LIMIT ?
+        `).all(requireText(options.applicationId, 'application_id'), limit)
+    return (rows as unknown as ProjectionRow[]).map(fromProjectionRow)
+  }
+
   saveProjection(projection: FeishuProjection): FeishuProjection {
     this.#ensureOpen()
     validateProjection(projection)
@@ -287,6 +303,7 @@ interface StoredSyncPreview {
   readonly target: FeishuTarget
   readonly createdAtMs: number
   readonly sourceHashes: Readonly<Record<string, string>>
+  readonly pendingCreates: Set<string>
   readonly applied?: FeishuSyncApplyResult
 }
 
@@ -317,6 +334,24 @@ const FIELD_ALIASES: Readonly<Record<FeishuSemanticField, readonly string[]>> = 
 const TEXT_SEMANTICS = new Set<FeishuSemanticField>(['company', 'role', 'jobUrl', 'city', 'location', 'summary'])
 const SELECT_SEMANTICS = new Set<FeishuSemanticField>(['sourcePlatform', 'status', 'priority', 'matchLevel', 'companyType'])
 const DATE_SEMANTICS = new Set<FeishuSemanticField>(['appliedAt', 'deadline'])
+
+const CONFIRMED_STATUS_OPTIONS = {
+  submitted: ['已投递', '投递完成', '已申请'],
+  assessment_scheduled: ['待笔试', '笔试待进行', '笔试安排'],
+  assessment_completed: ['笔试完成', '已完成笔试', '笔试已完成'],
+  interview_scheduled: ['待面试', '面试安排', '面试中'],
+  rejected: ['已拒绝', '未通过', '流程终止'],
+  offer: ['Offer', '已获Offer', '已录用', '录用'],
+  closed: ['已关闭', '流程关闭', '已结束'],
+} as const
+
+type ConfirmedApplicationStatus = keyof typeof CONFIRMED_STATUS_OPTIONS
+
+interface ConfirmedStatusFact {
+  readonly status: ConfirmedApplicationStatus
+  readonly occurredAt: string
+  readonly sequence: number
+}
 
 export class LocalFeishuProjectionService {
   readonly #client: FeishuClient
@@ -413,7 +448,7 @@ export class LocalFeishuProjectionService {
         items.push({ applicationId, company: projection.company, role: projection.role, action: 'create', fields: projection.fields })
         continue
       }
-      const diffs = diffFields(match.record.fields, projection.fields)
+      const diffs = diffFields(match.record.fields, projection.fields, target.mapping)
       items.push({
         applicationId,
         company: projection.company,
@@ -442,7 +477,14 @@ export class LocalFeishuProjectionService {
       },
       requiresConfirmation: true,
     }
-    this.#previews.set(previewToken, { kind: 'sync', preview, target, createdAtMs: Date.now(), sourceHashes })
+    this.#previews.set(previewToken, {
+      kind: 'sync',
+      preview,
+      target,
+      createdAtMs: Date.now(),
+      sourceHashes,
+      pendingCreates: new Set(),
+    })
     this.#prunePreviews()
     return preview
   }
@@ -454,6 +496,14 @@ export class LocalFeishuProjectionService {
     if (stored.applied !== undefined) return stored.applied
     const fields = await this.#client.listFields(stored.target.baseToken, stored.target.tableId)
     if (hashFields(fields) !== stored.preview.schemaHash) throw new Error('feishu_schema_changed')
+    for (const item of stored.preview.items) {
+      if (item.action === 'conflict') continue
+      const expectedSourceHash = stored.sourceHashes[item.applicationId]
+      const current = await buildLocalProjection(this.#source, item.applicationId, stored.target.mapping)
+      if (expectedSourceHash === undefined || current?.sourceHash !== expectedSourceHash) {
+        throw new Error('feishu_preview_stale')
+      }
+    }
     const applied: FeishuSyncItem[] = []
     let created = 0
     let updated = 0
@@ -485,14 +535,37 @@ export class LocalFeishuProjectionService {
         continue
       }
       if (item.fields === undefined) throw new Error('feishu_preview_stale')
-      const remoteRecordId = item.action === 'update' && item.remoteRecordId !== undefined
-        ? (await this.#client.updateRecord({ baseToken: stored.target.baseToken, tableId: stored.target.tableId, recordId: item.remoteRecordId, fields: item.fields })).recordId
-        : (await this.#client.createRecord({
-            baseToken: stored.target.baseToken,
-            tableId: stored.target.tableId,
-            fields: item.fields,
-            identityFieldIds: selectIdentityFieldIds(stored.target.mapping, item.fields),
-          })).recordId
+      const identityFieldIds = selectIdentityFieldIds(stored.target.mapping, item.fields)
+      let remoteRecordId: string
+      if (item.action === 'update' && item.remoteRecordId !== undefined) {
+        remoteRecordId = (await this.#client.updateRecord({
+          baseToken: stored.target.baseToken,
+          tableId: stored.target.tableId,
+          recordId: item.remoteRecordId,
+          fields: item.fields,
+        })).recordId
+      } else {
+        const createInput = {
+          baseToken: stored.target.baseToken,
+          tableId: stored.target.tableId,
+          fields: item.fields,
+          identityFieldIds,
+        }
+        if (stored.pendingCreates.has(item.applicationId)) {
+          if (this.#client.recoverCreatedRecord === undefined) throw new Error('feishu_create_recovery_unsupported')
+          remoteRecordId = (await this.#client.recoverCreatedRecord(createInput)).recordId
+        } else {
+          try {
+            remoteRecordId = (await this.#client.createRecord(createInput)).recordId
+          } catch (error) {
+            if (error instanceof Error && error.message === 'feishu_write_record_not_found_after_create') {
+              stored.pendingCreates.add(item.applicationId)
+            }
+            throw error
+          }
+        }
+        stored.pendingCreates.delete(item.applicationId)
+      }
       const lastResult = item.action === 'update' ? 'updated' : 'created'
       const projection: FeishuProjection = {
         targetId: stored.target.targetId,
@@ -623,11 +696,26 @@ async function buildLocalProjection(
   const job = await source.getJob(applicationId)
   if (job === undefined) return undefined
   const overview = await source.getApplicationOverview(applicationId)
+  const timeline = await source.listTimeline(applicationId)
+  const confirmedFacts = timeline
+    .map(toConfirmedStatusFact)
+    .filter((fact): fact is ConfirmedStatusFact => fact !== undefined)
+    .sort((left, right) => left.sequence - right.sequence)
+  const latestConfirmed = confirmedFacts.at(-1)
+  const confirmedStatus = latestConfirmed !== undefined && overview?.confirmedStatus === latestConfirmed.status
+    ? latestConfirmed.status
+    : undefined
+  const submittedAt = confirmedFacts.find((fact) => fact.status === 'submitted')?.occurredAt
+  const confirmedStatusOption = confirmedStatus === undefined || mapping.status === undefined
+    ? undefined
+    : selectConfirmedStatusOption(mapping.status, confirmedStatus)
   const values: Record<string, unknown> = {}
   const semanticValues: Partial<Record<FeishuSemanticField, string>> = {
     company: job.company,
     role: job.role,
     ...job.jobUrl === undefined ? {} : { jobUrl: job.jobUrl },
+    ...confirmedStatusOption === undefined ? {} : { status: confirmedStatusOption },
+    ...submittedAt === undefined ? {} : { appliedAt: submittedAt },
     summary: summarizeDescription(job.description),
   }
   for (const [semantic, mapped] of Object.entries(mapping) as [FeishuSemanticField, FeishuMappedField][]) {
@@ -645,6 +733,8 @@ async function buildLocalProjection(
     contentHash: job.contentHash,
     progressState: overview?.progressState ?? null,
     latestEventAt: overview?.latestEventAt ?? null,
+    confirmedStatus: confirmedStatus ?? null,
+    submittedAt: submittedAt ?? null,
   }
   return {
     applicationId,
@@ -653,6 +743,23 @@ async function buildLocalProjection(
     sourceHash: hashJson(sourceFact),
     fields: values,
   }
+}
+
+function toConfirmedStatusFact(event: Awaited<ReturnType<BossWatchDataSource['listTimeline']>>[number]): ConfirmedStatusFact | undefined {
+  if (event.type !== 'status_change_confirmed' || event.actor !== 'human' || typeof event.payload !== 'object' || event.payload === null || Array.isArray(event.payload)) {
+    return undefined
+  }
+  const status = event.payload.to
+  if (event.payload.source !== 'user_manual_confirmation' || !isConfirmedApplicationStatus(status)) return undefined
+  return { status, occurredAt: event.occurredAt, sequence: event.sequence }
+}
+
+function isConfirmedApplicationStatus(value: unknown): value is ConfirmedApplicationStatus {
+  return typeof value === 'string' && Object.hasOwn(CONFIRMED_STATUS_OPTIONS, value)
+}
+
+function selectConfirmedStatusOption(field: FeishuMappedField, status: ConfirmedApplicationStatus): string | undefined {
+  return CONFIRMED_STATUS_OPTIONS[status].find((option) => field.options.includes(option))
 }
 
 function convertCellValue(field: FeishuMappedField, value: string): unknown {
@@ -668,7 +775,7 @@ function convertCellValue(field: FeishuMappedField, value: string): unknown {
 function toFeishuDate(value: string): string | undefined {
   const parsed = new Date(value)
   if (!Number.isFinite(parsed.getTime())) return undefined
-  return parsed.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/u, '')
+  return parsed.toISOString()
 }
 
 function summarizeDescription(value: string): string {
@@ -713,14 +820,30 @@ function selectIdentityFieldIds(
   return Object.keys(fields)
 }
 
-function diffFields(before: Readonly<Record<string, unknown>>, after: Readonly<Record<string, unknown>>): Readonly<Record<string, { before: string; after: string }>> {
+function diffFields(
+  before: Readonly<Record<string, unknown>>,
+  after: Readonly<Record<string, unknown>>,
+  mapping: FeishuFieldMapping,
+): Readonly<Record<string, { before: string; after: string }>> {
   const result: Record<string, { before: string; after: string }> = {}
   for (const [fieldId, value] of Object.entries(after)) {
-    const previous = cellText(before[fieldId])
-    const next = cellText(value)
+    const mapped = Object.values(mapping).find(field => field.fieldId === fieldId)
+    const previous = comparableCellText(before[fieldId], mapped)
+    const next = comparableCellText(value, mapped)
     if (previous !== next) result[fieldId] = { before: previous, after: next }
   }
   return result
+}
+
+function comparableCellText(value: unknown, field: FeishuMappedField | undefined): string {
+  if (field?.fieldType !== 'datetime') return cellText(value)
+  const text = cellText(value)
+  if (text.length === 0) return text
+  const numeric = /^\d{10,13}$/u.test(text) ? Number(text) : undefined
+  const timestamp = numeric === undefined
+    ? Date.parse(text)
+    : numeric < 10_000_000_000 ? numeric * 1000 : numeric
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : text
 }
 
 function cellText(value: unknown): string {

@@ -50,6 +50,10 @@ Chrome 远程调试、BOSS 登录、二维码、验证码和风险提示仍由�
 `~/Library/Application Support/BossWatchAgent/dsh-service-token` 创建 `0600` 服务凭据。DSH Host 自动读取，
 普通网页 Origin、无凭据本机进程和 Chrome Extension 都不能调用 Browser Controller 接口。
 
+`/api/v1/health` 会返回 `apiContractVersion`、`buildIdentity` 和 `startedAt`。业务仓重新构建后必须重启
+4318；DSH 写工具在读取 token 或发送写请求前先校验契约，旧进程会明确返回
+`controller_restart_required`。不要用模糊的 401 判断凭据失效，也不要因端口占用杀死未知进程。
+
 ## 启动 DSH Web
 
 在 `boss-watch-agent` 根目录运行：
@@ -171,9 +175,10 @@ PDF/DOCX/Markdown/TXT；暂存完成后仅将绑定内容哈希的预览请求�
 3. 插件通过 `dsh.bundle` 接入 Host 工具；浏览器事实仍由 `boss-watch-agent` 校验并写入 SQLite。
 4. 每次改动分别运行业务仓库测试和插件/DSH smoke test。
 
-当前没有 `dsh.client` 岗位面板，因此岗位数据仍通过模型工具结果展示；简历导入已有独立 `dsh.client` 按钮。已实现的浏览器能力包括岗位卡片发现、
-受控详情打开、状态检查、当前岗位读取、选中会话招聘方消息读取、显式单次 JD Watch 和一次性到期批次；Watch 尚无常驻后台 Scheduler，
-官网投递已支持 Gate A 本地预览，以及对用户手工打开、与已核验链接同源的唯一官网/ATS 页做标准表单只读脱敏预览；字段填充、简历上传、消息/简历投递和自动回复仍未接入。面经使用文本 preview/apply 归档；招聘进度信号支持粘贴文本或 `.eml/.txt` 的本地 preview/apply；DSH 原生聊天附件仍只支持 PNG/JPG/WebP/GIF，简历按钮通过本机短期会话把 PDF/DOCX 暂存到受控目录。`boss_watch_resume_match` 会在插件本机完成文本提取和规则匹配，不依赖模型上传。
+当前 `dsh.client` 已提供求职中心按钮和 `shell.overlay`，内嵌同源 `/boss-watch/` 工作台；岗位池、匹配、Gate A、
+人工确认进度、Feishu 投影和下一步也可继续通过 DSH 工具读取。简历导入使用独立输入栏按钮。已实现的浏览器能力包括岗位卡片发现、
+受控详情打开、状态检查、当前岗位读取、选中会话招聘方消息读取、显式单次 JD Watch 和一次性到期批次；Watch 尚无常驻后台 Scheduler。
+官网投递已支持哈希绑定 Gate A、`leadId + gateAId` 准备预览，以及对用户手工打开、与已核验链接同源的唯一官网/ATS 页做标准表单只读脱敏预览。底层 Controller/service 可生成受 session、Gate A 和 form hash 约束的本地批量预填计划，但当前 Agent 没有填表 Tool 或审批入口；敏感字段、登录、验证码、风控、字段写入、简历上传、隐私同意项、消息/简历投递和最终提交仍由用户处理。面经使用文本 preview/apply 归档；招聘进度支持文本信号提议和用户人工状态 preview/apply，两者不能混为最终事实。DSH 原生聊天附件仍只支持 PNG/JPG/WebP/GIF，简历按钮通过本机短期会话把 PDF/DOCX 暂存到受控目录。`boss_watch_resume_match` 会在插件本机完成文本提取和规则匹配，不依赖模型上传。
 
 跟进收件箱是请求时刷新，不是 BOSS 或飞书推送。提醒的完成只表示本地待办已处理，不改变追加式投递事实。
 
@@ -184,8 +189,8 @@ cd $BOSS_WATCH_DIR/packages/dsh-plugin
 npm run eval:resume-match
 ```
 
-报告只包含 case ID、标签、预测集合和聚合指标，不包含 Gold 中的 JD/简历正文。当前 9 个虚构固定场景
-用于回归 `local-evidence-match-v2`，不能作为生产准确率或真实候选分布结论。
+报告只包含 case ID、标签、预测集合和聚合指标，不包含 Gold 中的 JD/简历正文。当前 10 个虚构固定场景
+用于回归 `local-evidence-match-v3`，不能作为生产准确率或真实候选分布结论。
 
 页面支持和后续 Feishu/action 插件边界见 [DSH 求职插件架构与页面支持矩阵](dsh-plugin-architecture.md)。
 

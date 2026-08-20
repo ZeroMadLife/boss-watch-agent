@@ -449,6 +449,89 @@ describe("capture API", () => {
     }
   });
 
+  it("records a user-confirmed application status only after preview and explicit apply", async () => {
+    const { server, origin, headers } = await startServer();
+    try {
+      const jobResponse = await fetch(`${origin}/api/v1/captures/job`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(jobSnapshot()),
+      });
+      const job = (await jobResponse.json()) as { applicationId: string };
+      const serviceHeaders = {
+        authorization: `Bearer ${serviceToken}`,
+        "content-type": "application/json",
+      };
+      const previewResponse = await fetch(`${origin}/api/v1/application-status/preview`, {
+        method: "POST",
+        headers: serviceHeaders,
+        body: JSON.stringify({
+          applicationId: job.applicationId,
+          status: "submitted",
+          occurredAt: "2026-08-14T08:45:00.000Z",
+        }),
+      });
+      expect(previewResponse.status).toBe(200);
+      const preview = (await previewResponse.json()) as {
+        previewToken: string;
+        applicationId: string;
+        status: string;
+        requiresConfirmation: boolean;
+      };
+      expect(preview).toMatchObject({
+        applicationId: job.applicationId,
+        status: "submitted",
+        occurredAt: "2026-08-14T08:45:00.000Z",
+        requiresConfirmation: true,
+        externalAction: "not_performed",
+      });
+
+      const rejected = await fetch(`${origin}/api/v1/application-status/apply`, {
+        method: "POST",
+        headers: serviceHeaders,
+        body: JSON.stringify({ previewToken: preview.previewToken, confirmed: false }),
+      });
+      expect(rejected.status).toBe(409);
+      expect(await rejected.json()).toEqual({ error: { code: "confirmation_required" } });
+
+      const applied = await fetch(`${origin}/api/v1/application-status/apply`, {
+        method: "POST",
+        headers: serviceHeaders,
+        body: JSON.stringify({ previewToken: preview.previewToken, confirmed: true }),
+      });
+      expect(applied.status).toBe(201);
+      const result = (await applied.json()) as { eventId: string };
+      expect(result).toMatchObject({
+        applicationId: job.applicationId,
+        status: "submitted",
+        recordedAt: "2026-08-14T08:45:00.000Z",
+        deduplicated: false,
+      });
+
+      const replay = await fetch(`${origin}/api/v1/application-status/apply`, {
+        method: "POST",
+        headers: serviceHeaders,
+        body: JSON.stringify({ previewToken: preview.previewToken, confirmed: true }),
+      });
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({ eventId: result.eventId, deduplicated: true });
+
+      const applicationResponse = await fetch(`${origin}/api/v1/applications/${job.applicationId}`, {
+        headers,
+      });
+      const application = (await applicationResponse.json()) as {
+        events: Array<{ type: string; actor: string; payload: Record<string, unknown> }>;
+      };
+      expect(application.events.at(-1)).toMatchObject({
+        type: "status_change_confirmed",
+        actor: "human",
+        payload: { to: "submitted", source: "user_manual_confirmation" },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("stages and parses a base64 .eml without placing the email body in the preview", async () => {
     const { server, origin, headers } = await startServer();
     try {

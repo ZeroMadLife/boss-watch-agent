@@ -9,6 +9,8 @@ import type { JobLead, JobLeadStore } from '../src/job-lead.ts'
 import type { ResumeVersion, ResumeVersionStore } from '../src/resume-version.ts'
 import type { BossWatchDataSource } from '../src/domain.ts'
 import { registerBossWatchTools } from '../src/tools.ts'
+import type { GateAApproval } from '../src/gate-a.ts'
+import type { RecruitmentSource } from '../src/recruitment-source.ts'
 
 const VERIFIED_LEAD: JobLead = {
   leadId: 'lead:fixture:application-preview',
@@ -35,10 +37,48 @@ const RESUME_VERSION: ResumeVersion = {
   createdAt: '2026-08-18T01:30:00.000Z',
 }
 
-function serviceFor(lead: JobLead | undefined, resume: ResumeVersion | null = RESUME_VERSION): LocalApplicationPreviewService {
+const GATE_A_APPROVAL: GateAApproval = {
+  gateAId: 'gate-a:application-preview',
+  strategyVersion: 'gate-a-v1',
+  matchId: 'resume-match:application-preview',
+  applicationId: 'application:application-preview',
+  resumeVersionId: RESUME_VERSION.resumeVersionId,
+  jdContentHash: 'c'.repeat(64),
+  resumeContentHash: RESUME_VERSION.contentHash,
+  matchStrategyVersion: 'local-evidence-match-v3',
+  matchScore: 86,
+  matchLevel: 'strong',
+  approvedAt: '2026-08-18T01:45:00.000Z',
+  decision: 'proceed',
+  externalAction: 'not_authorized',
+}
+
+const RECRUITMENT_SOURCE: RecruitmentSource = {
+  sourceId: 'recruitment-source:application-preview',
+  company: VERIFIED_LEAD.company,
+  channelUrl: 'https://careers.example.invalid/referral/application-preview',
+  sourceType: 'official_referral',
+  rawArtifactHash: 'd'.repeat(64),
+  capturedAt: '2026-08-18T00:30:00.000Z',
+  status: 'jd_ready',
+  boundLeadId: VERIFIED_LEAD.leadId,
+  boundApplicationId: GATE_A_APPROVAL.applicationId,
+  role: VERIFIED_LEAD.role,
+  officialJobUrl: VERIFIED_LEAD.officialApplyUrl,
+  jdContentHash: GATE_A_APPROVAL.jdContentHash,
+}
+
+function serviceFor(
+  lead: JobLead | undefined,
+  resume: ResumeVersion | null = RESUME_VERSION,
+  approval: GateAApproval | null = GATE_A_APPROVAL,
+  recruitmentSources: readonly RecruitmentSource[] = [RECRUITMENT_SOURCE],
+): LocalApplicationPreviewService {
   return new LocalApplicationPreviewService({
     leads: { get: () => lead },
     resumes: { get: () => resume === null ? undefined : resume },
+    approvals: { get: () => approval ?? undefined },
+    recruitmentSources: { list: () => [...recruitmentSources] },
     now: () => new Date('2026-08-18T02:00:00.000Z'),
   })
 }
@@ -46,16 +86,24 @@ function serviceFor(lead: JobLead | undefined, resume: ResumeVersion | null = RE
 test('builds a bounded official application preview without navigation or resume content reads', () => {
   const preview = serviceFor(VERIFIED_LEAD).preview({
     leadId: VERIFIED_LEAD.leadId,
-    resumeVersionId: RESUME_VERSION.resumeVersionId,
+    gateAId: GATE_A_APPROVAL.gateAId,
   })
 
-  assert.equal(preview.strategyVersion, 'apply-preview-v1')
+  assert.equal(preview.strategyVersion, 'apply-preview-v2')
   assert.equal(preview.createdAt, '2026-08-18T02:00:00.000Z')
   assert.equal(preview.expiresAt, '2026-08-18T02:15:00.000Z')
   assert.equal(preview.page.url, 'https://careers.example.invalid/jobs/agent')
   assert.equal(preview.page.hostname, 'careers.example.invalid')
   assert.equal(preview.page.navigation, 'not_started')
   assert.deepEqual(preview.resume, RESUME_VERSION)
+  assert.deepEqual(preview.gateA, {
+    gateAId: GATE_A_APPROVAL.gateAId,
+    matchId: GATE_A_APPROVAL.matchId,
+    applicationId: GATE_A_APPROVAL.applicationId,
+    approvedAt: GATE_A_APPROVAL.approvedAt,
+    decision: 'proceed',
+    externalAction: 'not_authorized',
+  })
   assert.deepEqual(preview.knownFields, [
     { field: 'company', value: '虚构科技', source: 'job_lead' },
     { field: 'role', value: 'Agent 平台工程师', source: 'job_lead' },
@@ -68,22 +116,30 @@ test('builds a bounded official application preview without navigation or resume
 
 test('fails closed when the lead is not verified or lacks an official URL', () => {
   assert.throws(
-    () => serviceFor({ ...VERIFIED_LEAD, confidence: 'source_only' }).preview({ leadId: VERIFIED_LEAD.leadId, resumeVersionId: RESUME_VERSION.resumeVersionId }),
+    () => serviceFor({ ...VERIFIED_LEAD, confidence: 'source_only' }).preview({ leadId: VERIFIED_LEAD.leadId, gateAId: GATE_A_APPROVAL.gateAId }),
     /apply_lead_not_verified/u,
   )
   assert.throws(
-    () => serviceFor({ ...VERIFIED_LEAD, officialApplyUrl: undefined }).preview({ leadId: VERIFIED_LEAD.leadId, resumeVersionId: RESUME_VERSION.resumeVersionId }),
+    () => serviceFor({ ...VERIFIED_LEAD, officialApplyUrl: undefined }).preview({ leadId: VERIFIED_LEAD.leadId, gateAId: GATE_A_APPROVAL.gateAId }),
     /apply_official_url_missing/u,
   )
 })
 
-test('rejects unknown resume versions and non-HTTPS application URLs', () => {
+test('rejects missing or stale Gate A evidence and non-HTTPS application URLs', () => {
   assert.throws(
-    () => serviceFor(VERIFIED_LEAD, null).preview({ leadId: VERIFIED_LEAD.leadId, resumeVersionId: RESUME_VERSION.resumeVersionId }),
-    /apply_resume_not_found/u,
+    () => serviceFor(VERIFIED_LEAD, RESUME_VERSION, null).preview({ leadId: VERIFIED_LEAD.leadId, gateAId: GATE_A_APPROVAL.gateAId }),
+    /apply_gate_a_not_found/u,
   )
   assert.throws(
-    () => serviceFor({ ...VERIFIED_LEAD, officialApplyUrl: 'http://careers.example.invalid/jobs/agent' }).preview({ leadId: VERIFIED_LEAD.leadId, resumeVersionId: RESUME_VERSION.resumeVersionId }),
+    () => serviceFor(VERIFIED_LEAD, RESUME_VERSION, GATE_A_APPROVAL, []).preview({ leadId: VERIFIED_LEAD.leadId, gateAId: GATE_A_APPROVAL.gateAId }),
+    /apply_gate_a_binding_missing/u,
+  )
+  assert.throws(
+    () => serviceFor(VERIFIED_LEAD, { ...RESUME_VERSION, contentHash: 'e'.repeat(64) }).preview({ leadId: VERIFIED_LEAD.leadId, gateAId: GATE_A_APPROVAL.gateAId }),
+    /apply_resume_snapshot_stale/u,
+  )
+  assert.throws(
+    () => serviceFor({ ...VERIFIED_LEAD, officialApplyUrl: 'http://careers.example.invalid/jobs/agent' }).preview({ leadId: VERIFIED_LEAD.leadId, gateAId: GATE_A_APPROVAL.gateAId }),
     /apply_official_url_invalid/u,
   )
 })
@@ -106,7 +162,13 @@ test('exposes the preview through the DSH tool and maps verification failures', 
       return resumeVersionId === RESUME_VERSION.resumeVersionId ? RESUME_VERSION : undefined
     },
   } as unknown as ResumeVersionStore
-  const previewService = new LocalApplicationPreviewService({ leads: store, resumes: resumeStore, now: () => new Date('2026-08-18T02:00:00.000Z') })
+  const previewService = new LocalApplicationPreviewService({
+    leads: store,
+    resumes: resumeStore,
+    approvals: { get: (gateAId) => gateAId === GATE_A_APPROVAL.gateAId ? GATE_A_APPROVAL : undefined },
+    recruitmentSources: { list: () => [RECRUITMENT_SOURCE] },
+    now: () => new Date('2026-08-18T02:00:00.000Z'),
+  })
   const dispose = registerBossWatchTools(
     context,
     source,
@@ -135,7 +197,7 @@ test('exposes the preview through the DSH tool and maps verification failures', 
     })
     const ok = await execute('boss_watch_apply_preview', {
       leadId: VERIFIED_LEAD.leadId,
-      resumeVersionId: RESUME_VERSION.resumeVersionId,
+      gateAId: GATE_A_APPROVAL.gateAId,
     }, 'ok')
     const okText = ok.content[0]
     if (okText?.type !== 'text') throw new Error('expected_text_tool_result')
@@ -146,11 +208,11 @@ test('exposes the preview through the DSH tool and maps verification failures', 
 
     const rejected = await execute('boss_watch_apply_preview', {
       leadId: VERIFIED_LEAD.leadId,
-      resumeVersionId: 'invalid',
+      gateAId: 'gate-a:missing',
     }, 'invalid')
     const rejectedText = rejected.content[0]
     if (rejectedText?.type !== 'text') throw new Error('expected_text_tool_result')
-    assert.deepEqual(JSON.parse(rejectedText.text), { status: 'invalid_request', message: 'invalid_resume_version_id' })
+    assert.deepEqual(JSON.parse(rejectedText.text), { status: 'not_found', message: 'apply_gate_a_not_found' })
   } finally {
     dispose()
     await context.fiber.dispose()

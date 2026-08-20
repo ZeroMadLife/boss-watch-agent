@@ -7,7 +7,7 @@ or copied into this repository.
 DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和受控浏览器工具：
 
 - `boss_watch_workspace_overview`：只读汇总当前闭环阶段、简历/候选/JD/Feishu 计数、可用来源和下一步；不刷新任何来源；
-- `boss_watch_candidate_board`：只读汇总 Gank/Tencent `JobLead` 与 BOSS 已捕获 JD；保留来源事实边界，不写 Feishu；
+- `boss_watch_candidate_board`：只读汇总未绑定招聘来源、来源岗位与完整 JD；只有显式 `boundLeadId + boundApplicationId` 才把内推码、官网入口、最新脱敏匹配、Gate A、确认进度和 Feishu 投影汇到同一行；scheduled follow-up 只投影 ID、时间和原因，不返回备注；有限快照优先保留跟进与已捕获 application，不按公司名/URL 猜测合并，也不写 Feishu；
 - `boss_watch_boss_search_preview` / `boss_watch_boss_search_run`：先预览再确认执行固定关键词/城市搜索；最多 2 页/5 个岗位，跨页按岗位 ID 去重、详情串行捕获，遇到登录/验证码/风控/断连立即 handoff；
 - `boss_watch_job_list`：列出已捕获 JD；
 - `boss_watch_job_get`：查看单个 JD 原文和哈希；
@@ -18,6 +18,9 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_follow_up_schedule`：为已存在的 application 创建本地提醒，不执行外部动作；
 - `boss_watch_follow_up_complete`：关闭一条本地提醒，不代表外部跟进已经成功；
 - `boss_watch_lead_search`：只读查询 GankInterview 校招岗位并保存最小本地候选快照；不核验官网、不投递；
+- `boss_watch_recruitment_source_preview` / `boss_watch_recruitment_source_apply`：预览并确认用户粘贴的公司、HTTPS 招聘链接和可选内推码；只写本地来源收件箱，不伪造岗位、不访问官网；
+- `boss_watch_recruitment_source_list` / `boss_watch_recruitment_source_get`：读取来源收件箱；`source_only` 仍需绑定确切岗位和完整 JD；
+- `boss_watch_recruitment_jd_preview` / `boss_watch_recruitment_jd_apply`：为已确认来源预览并绑定确切岗位、官网 URL 和完整 JD；preview 不写库且不回显 JD，apply 经明确确认后写本地 Artifact、创建 `human_confirmed` 官网 JobLead，并回写 `leadId/applicationId/JD hash`；
 - `boss_watch_lead_list` / `boss_watch_lead_get`：读取本地候选池。
 - `boss_watch_lead_observation_list`：读取本地来源观察历史；默认展示新增/变化，可选包含未变化刷新；不会访问外部来源；
 - `boss_watch_lead_import_preview`：预览受控目录中的腾讯 CSV/XLSX 导出文件，不写岗位事实；
@@ -37,8 +40,10 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_resume_import_preview`：预览受控目录中的 PDF/DOCX/Markdown/TXT 简历，计算哈希但不返回正文；
 - `boss_watch_resume_import_apply`：用户确认后复核哈希，写入内容寻址本地工件和 ResumeVersion 元数据；
 - `boss_watch_resume_list` / `boss_watch_resume_get`：只读简历版本元数据，不返回正文或绝对路径；
-- `boss_watch_resume_match`：使用 `local-evidence-match-v2` 在本机生成技能/硬约束证据和保守等级，不返回正文；
-- `boss_watch_apply_preview`：绑定已核验 JobLead 和已登记 ResumeVersion，生成官网投递 Gate A 预览；不打开页面、不读取正文、不填表、不提交；
+- `boss_watch_resume_match`：使用 `local-evidence-match-v3` 在本机生成技术、描述性能力、资格/地点偏好证据和脱敏 `resumeSummary`；不返回正文，不调用外部模型；
+- `boss_watch_resume_match_list`：读取按 JD/简历哈希/策略版本持久化的脱敏匹配历史；不返回简历或 JD 原文；
+- `boss_watch_gate_a_confirm`：把精确 match/JD/简历/策略快照保存为幂等 Gate A；只批准进入材料准备，不授权外部动作；
+- `boss_watch_apply_preview`：用已核验 `leadId + gateAId` 生成官网投递准备预览，简历版本固定来自 Gate A；不打开页面、不读取正文、不填表、不提交；
 - `boss_watch_application_form_preview`：只读检查用户已打开且与已核验 JobLead 同源的唯一官网/ATS 页面，脱敏分类标准表单字段；不导航、不填表、不上传、不提交；
 - `boss_watch_feishu_preview`：生成 Feishu 多维表格字段预览，不执行写入；
 - `boss_watch_feishu_target_preview`：解析用户提供的 Feishu Base/Wiki 链接，读取表结构并生成字段映射预览；
@@ -52,6 +57,7 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_capture_current_conversation`：读取当前唯一 BOSS 聊天页中选中会话的最近招聘方消息；不回复、不点击、不发送。
 - `boss_watch_interview_note_preview` / `boss_watch_interview_note_apply`：先预览用户手工输入的面经和哈希，明确确认后追加本地 interview_note Artifact/Event。
 - `boss_watch_progress_signal_preview` / `boss_watch_progress_signal_apply`：预览粘贴文本或受控 `.eml/.txt` 招聘通知，明确确认后追加本地进度证据和可选状态提议；不写飞书、不执行外部动作。
+- `boss_watch_application_status_preview` / `boss_watch_application_status_apply`：预览并确认用户主动陈述的已投递、笔试、面试、拒绝、Offer 或关闭事实；只追加本地 `status_change_confirmed`，不代表 Agent 执行了外部动作。
 
 同时注册 `boss-watch-job-search` Skill，指导模型按需使用只读工具并在外部动作前停在审批。
 用户没有指定来源、只说“开始找工作”时，Skill 先调用 workspace overview，再让用户在 GankInterview、
@@ -72,23 +78,31 @@ BOSS 岗位详情页；捕获后自动关闭，遇到登录或验证码则保留
 DSH 原生聊天附件目前只支持 PNG/JPG/WebP/GIF；插件在输入栏提供独立“导入简历”按钮，通过 4318
 本机短期上传会话把 PDF/DOCX/Markdown/TXT 暂存到该受控目录，只生成预览草稿，不自动发送或 apply。
 同一输入栏的回形针按钮只暂存 `.eml/.txt` 招聘进度信号，单文件上限 2 MiB；预览不返回邮件正文。
-招聘官网/ATS 的权威状态通常仍需登录，邮件规则分类不能替代官网核验，也不会自动触发 Feishu 同步。
+招聘官网/ATS 的权威状态通常仍需登录，邮件规则分类不能替代官网核验，也不会自动触发 Feishu 写入。人工状态确认后，看板可推荐生成 Feishu 同步预览；仍须再次明确确认才 apply。
 
 批量计划是本地状态模型：`queued -> awaiting_gate_b -> ready -> in_progress -> submitted_observed`，异常时进入
 `failed` 或 `handoff_required`。当前版本已实现计划、状态、恢复和官网/ATS 标准表单的只读脱敏预览；真正的
-Gate B 校验、字段填充、简历上传和最终提交仍未接入。
+Gate B 校验、Agent 侧填表审批入口、字段写入、简历上传和最终提交仍未接入；底层表单预览 service 的本地预填计划仅供后续受控切片使用。
 记录 Gate B 和开始岗位前都会重新核对批次保存的 `leadContentHash` 与当前候选快照；来源变化会返回
 `lead_content_changed` 并保持原岗位停在等待状态，不会复用旧核验。
 
 跟进提醒保存在同一 SQLite 的 `application_follow_ups` 表。列表工具每次调用都重新读取提醒和
 `application_events`，所以能反映本地最新写入；这里的“实时”是请求时刷新，不是 BOSS/飞书推送，
-也不是后台自动轮询。提醒原因和完成状态不会覆盖岗位事实或把 `status_change_proposed` 升级为已确认状态。
+也不是后台自动轮询。Dashboard 会在到期前 24 小时把提醒放入“今日待办”，投递跟踪只展示时间和原因；
+自由文本备注不进入 dashboard snapshot。提醒原因和完成状态不会覆盖岗位事实或把 `status_change_proposed`
+升级为已确认状态。
 
 岗位核验采用两步本地状态机：`source_only -> url_verified -> human_confirmed`。确认工具只读取候选快照中
 已经保存的 `channelUrl`，要求 HTTPS，并绑定调用时展示的 `contentHash`；来源刷新后内容哈希变化会清除旧
 `officialApplyUrl`、退回 `source_only`，避免旧核验被新岗位内容复用。确认事实另存于
 `job_lead_verifications`，重复确认同一 `leadId + contentHash + kind` 返回原记录。`jd_verified` 保留给后续
 具有可审计页面证据的自动核验；当前两个工具不访问官网，也不证明链接仍在线。
+
+粘贴来源收件箱采用另一条更窄的状态链：`source_only -> jd_ready`。来源只包含公司、入口链接和可选内推码；
+用户在官网选择确切岗位并提供完整 JD 后，先预览公司、岗位、精确 HTTPS URL、JD 哈希/长度和可选元数据，
+再明确确认 apply。核心 4318 接口以 `official_portal + human` 追加 JD Event/Artifact，插件创建并人工确认
+`company_career_site` JobLead，随后把 `leadId/applicationId/JD hash` 绑定回来源。JD 原文只存在本地 Artifact；
+工具结果、来源表和匹配历史不保存或回显原文。相同预览重试幂等，来源哈希变化会拒绝旧预览。
 
 来源不是持续同步。每次 `boss_watch_lead_search` 只拉取当前请求命中的 GankInterview 页面，并在同一 SQLite
 事务中更新 `job_leads` 当前快照、追加 `job_lead_observations`。观察类型为 `new/unchanged/changed`；变化记录
@@ -142,6 +156,6 @@ Token: ~/Library/Application Support/BossWatchAgent/dsh-service-token
 
 可通过 `BOSS_WATCH_API_ORIGIN` 和 `BOSS_WATCH_SERVICE_TOKEN_PATH` 覆盖；API origin 必须是 loopback HTTP。
 
-运行 `npm run eval:resume-match` 可执行 9 个虚构 Gold/Badcase 回归。该结果只覆盖固定 fixture，不是生产准确率。
+运行 `npm run eval:resume-match` 可执行 10 个虚构 Gold/Badcase 回归。该结果只覆盖固定 fixture，不是生产准确率。
 
 之后重启 DSH Web（`cd $BOSS_WATCH_DIR && npm run dsh:dev`），工具会出现在模型可用工具列表中；`dsh.client` 已在输入栏提供 PDF/DOCX/Markdown/TXT 简历选择按钮。

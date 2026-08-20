@@ -204,4 +204,95 @@ describe("official application form inspection", () => {
       targetCount: 1,
     });
   });
+
+  it("fills an exact standard-form plan without checking consent or submitting", async () => {
+    let submitCount = 0;
+    const dom = new JSDOM(
+      `<!doctype html><title>虚构 ATS</title><form id="application-form">
+      <label for="name">姓名</label><input id="name" name="candidate_name" required>
+      <label for="email">邮箱</label><input id="email" type="email" name="candidate_email" autocomplete="email">
+      <label for="city">所在城市</label><select id="city" name="city"><option value="">请选择</option><option value="shanghai">上海</option></select>
+      <label><input id="consent" type="checkbox" name="privacy"> 同意隐私条款</label>
+      <button type="submit">提交</button>
+    </form>`,
+      { url: officialUrl, runScripts: "outside-only" },
+    );
+    dom.window.document.querySelector("form")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitCount += 1;
+    });
+    const browserRuntime = runtime({
+      async evaluate(_targetId, expression) {
+        return dom.window.eval(expression) as unknown;
+      },
+    });
+    const formController = controller(browserRuntime);
+    const inspected = await formController.inspectApplicationForm(officialUrl);
+    expect(inspected.status).toBe("ready");
+    if (inspected.status !== "ready") throw new Error("expected_ready_form");
+    const fieldByLabel = new Map(inspected.fields.map((field) => [field.label, field]));
+    const name = fieldByLabel.get("姓名");
+    const email = fieldByLabel.get("邮箱");
+    const city = fieldByLabel.get("所在城市");
+    if (name === undefined || email === undefined || city === undefined)
+      throw new Error("missing_fixture_fields");
+
+    const filled = await formController.fillApplicationForm({
+      expectedUrl: officialUrl,
+      expectedFormHash: inspected.page.formHash,
+      fields: [
+        { fieldId: name.fieldId, value: "候选人甲" },
+        { fieldId: email.fieldId, value: "private@example.invalid" },
+        { fieldId: city.fieldId, value: "上海" },
+      ],
+    });
+
+    expect(filled).toMatchObject({
+      status: "filled",
+      filledCount: 3,
+      filledFieldIds: [name.fieldId, email.fieldId, city.fieldId],
+      requiresHumanReview: true,
+      submitted: false,
+    });
+    expect((dom.window.document.querySelector("#name") as HTMLInputElement).value).toBe("候选人甲");
+    expect((dom.window.document.querySelector("#email") as HTMLInputElement).value).toBe(
+      "private@example.invalid",
+    );
+    expect((dom.window.document.querySelector("#city") as HTMLSelectElement).value).toBe("shanghai");
+    expect((dom.window.document.querySelector("#consent") as HTMLInputElement).checked).toBe(false);
+    expect(submitCount).toBe(0);
+    expect(JSON.stringify(filled)).not.toContain("private@example.invalid");
+    expect(JSON.stringify(filled)).not.toContain("候选人甲");
+  });
+
+  it("does not mutate the page when the form hash changed after preview", async () => {
+    const dom = new JSDOM(
+      '<form><label for="name">姓名</label><input id="name" name="candidate_name"></form>',
+      { url: officialUrl, runScripts: "outside-only" },
+    );
+    const formController = controller(
+      runtime({
+        async evaluate(_targetId, expression) {
+          return dom.window.eval(expression) as unknown;
+        },
+      }),
+    );
+    const inspected = await formController.inspectApplicationForm(officialUrl);
+    expect(inspected.status).toBe("ready");
+    if (inspected.status !== "ready") throw new Error("expected_ready_form");
+    const field = inspected.fields[0];
+    if (field === undefined) throw new Error("missing_fixture_field");
+    dom.window.document
+      .querySelector("form")
+      ?.insertAdjacentHTML("beforeend", '<label for="extra">新增问题</label><input id="extra" name="extra">');
+
+    await expect(
+      formController.fillApplicationForm({
+        expectedUrl: officialUrl,
+        expectedFormHash: inspected.page.formHash,
+        fields: [{ fieldId: field.fieldId, value: "候选人甲" }],
+      }),
+    ).resolves.toMatchObject({ status: "conflict", reason: "form_changed" });
+    expect((dom.window.document.querySelector("#name") as HTMLInputElement).value).toBe("");
+  });
 });

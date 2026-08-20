@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { isIP } from 'node:net'
 import type {
   BrowserApplicationFormField,
@@ -6,6 +6,8 @@ import type {
   BossWatchBrowserController,
 } from './domain.js'
 import type { JobLead, JobLeadStore } from './job-lead.js'
+import type { GateAApproval, GateAStore } from './gate-a.js'
+import type { RecruitmentSourceStore } from './recruitment-source.js'
 import type {
   LocalResumeImportService,
   ResumeTextContent,
@@ -57,13 +59,16 @@ export interface ApplicationFormFieldPreview {
   readonly sourceAvailability: 'available' | 'not_observed' | 'not_applicable'
   readonly personalData: boolean
   readonly metadataTrust: 'untrusted_page'
+  readonly plannedAction: 'fill' | 'keep_existing' | 'manual'
 }
 
 export interface ApplicationFormPreview {
   readonly previewId: string
-  readonly strategyVersion: 'application-form-preview-v1'
+  readonly previewToken: string
+  readonly strategyVersion: 'application-form-prefill-v1'
   readonly createdAt: string
   readonly expiresAt: string
+  readonly gateA: Pick<GateAApproval, 'gateAId' | 'matchId' | 'applicationId' | 'resumeVersionId'>
   readonly lead: Pick<JobLead, 'leadId' | 'company' | 'role' | 'contentHash' | 'confidence'> & {
     readonly officialApplyUrl: string
   }
@@ -77,6 +82,15 @@ export interface ApplicationFormPreview {
     readonly status: ResumeTextContent['extractionStatus']
     readonly characterCount: number
   }
+  readonly profile: {
+    readonly strategyVersion: 'resume-derived-profile-v1'
+    readonly persistence: 'derived_on_demand'
+    /** The model is not called once per field; the local profile is batched. */
+    readonly fillStrategy: 'local_batch_plan'
+    readonly modelCalls: 0
+    readonly browserCallsAfterApproval: 1
+    readonly availableSemantics: readonly ApplicationFormSemantic[]
+  }
   readonly page: Extract<BrowserApplicationFormInspection, { readonly status: 'ready' }>['page']
   readonly fields: readonly ApplicationFormFieldPreview[]
   readonly summary: {
@@ -86,11 +100,50 @@ export interface ApplicationFormPreview {
     readonly sensitiveCount: number
     readonly unknownCount: number
     readonly alreadyPresentCount: number
+    readonly fillableCount: number
+    readonly manualCount: number
   }
   readonly warnings: readonly string[]
   readonly readOnly: true
   readonly externalAction: 'not_started'
   readonly requiresGateB: true
+  readonly requiresOneShotApproval: true
+}
+
+export type ApplicationFormApplyOutcome =
+  | {
+      readonly status: 'filled'
+      readonly leadId: string
+      readonly gateAId: string
+      readonly formHash: string
+      readonly filledFieldIds: readonly string[]
+      readonly filledCount: number
+      readonly manualReviewRequired: true
+      readonly submitted: false
+    }
+  | {
+      readonly status: 'handoff_required'
+      readonly reason: string
+      readonly browserStatus: string
+      readonly targetCount: number
+    }
+  | {
+      readonly status: 'conflict'
+      readonly reason: string
+      readonly currentFormHash?: string
+    }
+
+interface PendingApplicationFormPreview {
+  readonly sessionId: string
+  readonly leadId: string
+  readonly gateAId: string
+  readonly leadContentHash: string
+  readonly resumeVersionId: string
+  readonly resumeContentHash: string
+  readonly expectedUrl: string
+  readonly formHash: string
+  readonly expiresAt: number
+  readonly fields: readonly { readonly fieldId: string; readonly value: string }[]
 }
 
 export type ApplicationFormPreviewOutcome =
@@ -115,37 +168,53 @@ const SENSITIVE_SEMANTICS = new Set<ApplicationFormSemantic>([
   'salary_expectation',
 ])
 
+const PROFILE_SEMANTIC_ORDER: readonly ApplicationFormSemantic[] = [
+  'full_name',
+  'email',
+  'phone',
+  'location',
+  'school',
+  'major',
+  'education',
+  'graduation_year',
+  'work_experience',
+  'skills',
+  'portfolio_url',
+]
+
 export class LocalApplicationFormPreviewService {
   readonly #leads: Pick<JobLeadStore, 'get'>
   readonly #resumes: Pick<ResumeVersionStore, 'get'>
+  readonly #approvals: Pick<GateAStore, 'get'>
+  readonly #recruitmentSources: Pick<RecruitmentSourceStore, 'list'>
   readonly #resumeImport: Pick<LocalResumeImportService, 'readText'>
-  readonly #browser: Pick<BossWatchBrowserController, 'inspectApplicationForm'>
+  readonly #browser: Pick<BossWatchBrowserController, 'inspectApplicationForm' | 'fillApplicationForm'>
   readonly #now: () => Date
+  readonly #pending = new Map<string, PendingApplicationFormPreview>()
+  readonly #consumed = new Set<string>()
 
   constructor(input: {
     leads: Pick<JobLeadStore, 'get'>
     resumes: Pick<ResumeVersionStore, 'get'>
+    approvals: Pick<GateAStore, 'get'>
+    recruitmentSources: Pick<RecruitmentSourceStore, 'list'>
     resumeImport: Pick<LocalResumeImportService, 'readText'>
-    browser: Pick<BossWatchBrowserController, 'inspectApplicationForm'>
+    browser: Pick<BossWatchBrowserController, 'inspectApplicationForm' | 'fillApplicationForm'>
     now?: () => Date
   }) {
     this.#leads = input.leads
     this.#resumes = input.resumes
+    this.#approvals = input.approvals
+    this.#recruitmentSources = input.recruitmentSources
     this.#resumeImport = input.resumeImport
     this.#browser = input.browser
     this.#now = input.now ?? (() => new Date())
   }
 
-  async preview(input: { leadId: string; resumeVersionId: string }): Promise<ApplicationFormPreviewOutcome> {
-    const lead = this.#leads.get(requireText(input.leadId, 'lead_id'))
-    if (lead === undefined) throw new Error('application_form_lead_not_found')
-    if (lead.confidence !== 'human_confirmed' && lead.confidence !== 'jd_verified') {
-      throw new Error('application_form_lead_not_verified')
-    }
-    if (lead.officialApplyUrl === undefined) throw new Error('application_form_official_url_missing')
-    const officialApplyUrl = normalizeOfficialUrl(lead.officialApplyUrl)
-    const resume = this.#resumes.get(input.resumeVersionId)
-    if (resume === undefined) throw new Error('application_form_resume_not_found')
+  async preview(input: { leadId: string; gateAId: string; sessionId: string }): Promise<ApplicationFormPreviewOutcome> {
+    const sessionId = requireText(input.sessionId, 'session_id')
+    const binding = this.#resolveBinding(input.leadId, input.gateAId)
+    const { lead, gateA, resume, officialApplyUrl } = binding
 
     const inspected = await this.#browser.inspectApplicationForm(officialApplyUrl)
     if (inspected.status !== 'ready') {
@@ -166,24 +235,56 @@ export class LocalApplicationFormPreviewService {
     ) throw new Error('application_form_resume_identity_mismatch')
 
     const availability = resumeAvailability(extracted.text)
-    const fields = inspected.fields.map((field) => classifyField(field, availability))
+    const values = candidateProfileValues(extracted.text)
+    values.set('target_role', lead.role)
+    const fields = inspected.fields.map((field) => classifyField(field, availability, values))
     const now = this.#now()
+    const expiresAt = now.getTime() + 15 * 60 * 1000
     const warnings = [
       'page_field_labels_are_untrusted_metadata',
       'existing_field_values_are_redacted',
+      'final_submit_remains_manual',
+      ...fields.some((field) => field.category === 'sensitive') ? ['sensitive_fields_require_manual_review'] : [],
+      ...fields.some((field) => field.semantic === 'resume_file') ? ['resume_upload_requires_manual_handoff'] : [],
       ...extracted.extractionStatus === 'text_truncated' ? ['resume_text_truncated'] : [],
       ...fields.some((field) => field.disabled || field.readOnly) ? ['non_editable_fields_present'] : [],
     ]
-    const previewId = `application-form-preview:${createHash('sha256')
-      .update(`${lead.leadId}\u0000${lead.contentHash}\u0000${resume.resumeVersionId}\u0000${resume.contentHash}\u0000${inspected.page.formHash}`)
+    const previewId = `application-form-prefill:${createHash('sha256')
+      .update(`${sessionId}\u0000${gateA.gateAId}\u0000${lead.leadId}\u0000${lead.contentHash}\u0000${resume.resumeVersionId}\u0000${resume.contentHash}\u0000${inspected.page.formHash}`)
       .digest('hex')}`
+    const previewToken = `application-form-prefill:${randomBytes(24).toString('hex')}`
+    const fillFields = fields.flatMap((field) => {
+      if (field.plannedAction !== 'fill') return []
+      const value = values.get(field.semantic)
+      return value === undefined ? [] : [{ fieldId: field.fieldId, value }]
+    })
+    this.#pruneExpired(now.getTime())
+    this.#pending.set(previewToken, {
+      sessionId,
+      leadId: lead.leadId,
+      gateAId: gateA.gateAId,
+      leadContentHash: lead.contentHash,
+      resumeVersionId: resume.resumeVersionId,
+      resumeContentHash: resume.contentHash,
+      expectedUrl: officialApplyUrl,
+      formHash: inspected.page.formHash,
+      expiresAt,
+      fields: fillFields,
+    })
     return {
       status: 'ready',
       preview: {
         previewId,
-        strategyVersion: 'application-form-preview-v1',
+        previewToken,
+        strategyVersion: 'application-form-prefill-v1',
         createdAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + 15 * 60 * 1000).toISOString(),
+        expiresAt: new Date(expiresAt).toISOString(),
+        gateA: {
+          gateAId: gateA.gateAId,
+          matchId: gateA.matchId,
+          applicationId: gateA.applicationId,
+          resumeVersionId: gateA.resumeVersionId,
+        },
         lead: {
           leadId: lead.leadId,
           company: lead.company,
@@ -202,6 +303,14 @@ export class LocalApplicationFormPreviewService {
           status: extracted.extractionStatus,
           characterCount: extracted.characterCount,
         },
+        profile: {
+          strategyVersion: 'resume-derived-profile-v1',
+          persistence: 'derived_on_demand',
+          fillStrategy: 'local_batch_plan',
+          modelCalls: 0,
+          browserCallsAfterApproval: 1,
+          availableSemantics: PROFILE_SEMANTIC_ORDER.filter((semantic) => availability.has(semantic)),
+        },
         page: inspected.page,
         fields,
         summary: {
@@ -211,12 +320,107 @@ export class LocalApplicationFormPreviewService {
           sensitiveCount: count(fields, 'sensitive'),
           unknownCount: count(fields, 'unknown'),
           alreadyPresentCount: fields.filter((field) => field.currentState === 'present' || field.currentState === 'checked').length,
+          fillableCount: fields.filter((field) => field.plannedAction === 'fill').length,
+          manualCount: fields.filter((field) => field.plannedAction === 'manual').length,
         },
         warnings,
         readOnly: true,
         externalAction: 'not_started',
         requiresGateB: true,
+        requiresOneShotApproval: true,
       },
+    }
+  }
+
+  async apply(input: { previewToken: string; sessionId: string }): Promise<ApplicationFormApplyOutcome> {
+    const previewToken = requireText(input.previewToken, 'preview_token')
+    if (this.#consumed.has(previewToken)) throw new Error('application_form_preview_consumed')
+    const pending = this.#pending.get(previewToken)
+    if (pending === undefined) throw new Error('application_form_preview_not_found')
+    const sessionId = requireText(input.sessionId, 'session_id')
+    if (pending.sessionId !== sessionId) throw new Error('application_form_preview_session_mismatch')
+    if (pending.expiresAt <= this.#now().getTime()) {
+      this.#pending.delete(previewToken)
+      throw new Error('application_form_preview_expired')
+    }
+    const binding = this.#resolveBinding(pending.leadId, pending.gateAId)
+    if (
+      binding.lead.contentHash !== pending.leadContentHash
+      || binding.resume.resumeVersionId !== pending.resumeVersionId
+      || binding.resume.contentHash !== pending.resumeContentHash
+      || binding.officialApplyUrl !== pending.expectedUrl
+    ) throw new Error('application_form_preview_binding_changed')
+    if (pending.fields.length === 0) throw new Error('application_form_no_fillable_fields')
+    if (this.#browser.fillApplicationForm === undefined) throw new Error('application_form_fill_unavailable')
+    this.#pending.delete(previewToken)
+    this.#consumed.add(previewToken)
+    const result = await this.#browser.fillApplicationForm({
+      expectedUrl: pending.expectedUrl,
+      expectedFormHash: pending.formHash,
+      fields: pending.fields,
+    })
+    if (result.status === 'conflict') {
+      return {
+        status: 'conflict',
+        reason: result.reason,
+        ...result.currentFormHash === undefined ? {} : { currentFormHash: result.currentFormHash },
+      }
+    }
+    if (result.status !== 'filled') {
+      return {
+        status: 'handoff_required',
+        reason: result.reason,
+        browserStatus: result.status,
+        targetCount: result.targetCount,
+      }
+    }
+    if (
+      result.formHash !== pending.formHash
+      || result.filledCount !== pending.fields.length
+      || !sameFieldIds(result.filledFieldIds, pending.fields.map((field) => field.fieldId))
+    ) return { status: 'conflict', reason: 'fill_result_mismatch' }
+    return {
+      status: 'filled',
+      leadId: pending.leadId,
+      gateAId: pending.gateAId,
+      formHash: result.formHash,
+      filledFieldIds: result.filledFieldIds,
+      filledCount: result.filledCount,
+      manualReviewRequired: true,
+      submitted: false,
+    }
+  }
+
+  #resolveBinding(leadIdInput: string, gateAIdInput: string): {
+    lead: JobLead
+    gateA: GateAApproval
+    resume: NonNullable<ReturnType<ResumeVersionStore['get']>>
+    officialApplyUrl: string
+  } {
+    const lead = this.#leads.get(requireText(leadIdInput, 'lead_id'))
+    if (lead === undefined) throw new Error('application_form_lead_not_found')
+    if (lead.confidence !== 'human_confirmed' && lead.confidence !== 'jd_verified') {
+      throw new Error('application_form_lead_not_verified')
+    }
+    if (lead.officialApplyUrl === undefined) throw new Error('application_form_official_url_missing')
+    const gateA = this.#approvals.get(requireText(gateAIdInput, 'gate_a_id'))
+    if (gateA === undefined) throw new Error('application_form_gate_a_not_found')
+    const exactBinding = this.#recruitmentSources.list({ limit: 100 }).some((source) => (
+      source.status === 'jd_ready'
+      && source.boundLeadId === lead.leadId
+      && source.boundApplicationId === gateA.applicationId
+      && source.jdContentHash === gateA.jdContentHash
+    ))
+    if (!exactBinding) throw new Error('application_form_gate_a_binding_missing')
+    const resume = this.#resumes.get(gateA.resumeVersionId)
+    if (resume === undefined) throw new Error('application_form_resume_not_found')
+    if (resume.contentHash !== gateA.resumeContentHash) throw new Error('application_form_resume_snapshot_stale')
+    return { lead, gateA, resume, officialApplyUrl: normalizeOfficialUrl(lead.officialApplyUrl) }
+  }
+
+  #pruneExpired(now: number): void {
+    for (const [token, preview] of this.#pending) {
+      if (preview.expiresAt <= now) this.#pending.delete(token)
     }
   }
 }
@@ -224,6 +428,7 @@ export class LocalApplicationFormPreviewService {
 function classifyField(
   field: BrowserApplicationFormField,
   availability: ReadonlySet<ApplicationFormSemantic>,
+  values: ReadonlyMap<ApplicationFormSemantic, string>,
 ): ApplicationFormFieldPreview {
   const semantic = detectSemantic(field)
   const fromLead = semantic === 'target_role'
@@ -236,6 +441,17 @@ function classifyField(
       : observed
         ? 'resume_available'
         : 'needs_user_input'
+  const alreadyPresent = field.currentState === 'present' || field.currentState === 'checked'
+  const plannedAction = alreadyPresent
+    ? 'keep_existing'
+    : !field.disabled
+        && !field.readOnly
+        && values.has(semantic)
+        && isFillableControl(field.controlType)
+        && semantic !== 'consent'
+        && !sensitive
+      ? 'fill'
+      : 'manual'
   return {
     fieldId: field.fieldId,
     ordinal: field.ordinal,
@@ -251,6 +467,7 @@ function classifyField(
     sourceAvailability: observed ? 'available' : semantic === 'unknown' || semantic === 'consent' ? 'not_applicable' : 'not_observed',
     personalData: isPersonalData(semantic),
     metadataTrust: 'untrusted_page',
+    plannedAction,
   }
 }
 
@@ -305,6 +522,70 @@ function resumeAvailability(text: string): ReadonlySet<ApplicationFormSemantic> 
   if (/(?:婚姻状况)\s*[:：]?\s*(?:已婚|未婚)/u.test(text)) available.add('marital_status')
   if (/(?:政治面貌)\s*[:：]?\s*\S+/u.test(text)) available.add('political_status')
   return available
+}
+
+function candidateProfileValues(text: string): Map<ApplicationFormSemantic, string> {
+  const values = new Map<ApplicationFormSemantic, string>()
+  addProfileValue(values, 'full_name', matchValue(text, [
+    /(?:^|\n)\s*(?:姓名|name)\s*[:：]\s*([^\n]{2,40})(?:\n|$)/iu,
+  ]))
+  addProfileValue(values, 'email', matchValue(text, [/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu], 0))
+  addProfileValue(values, 'phone', matchValue(text, [/(?:\+?86[- ]?)?1[3-9]\d{9}/u], 0))
+  addProfileValue(values, 'location', matchValue(text, [
+    /(?:现居地|所在地|所在城市|居住地|location|city)\s*[:：]\s*([^\n]{2,40})(?:\n|$)/iu,
+  ]))
+  addProfileValue(values, 'school', matchValue(text, [
+    /(?:毕业院校|学校|school|university)\s*[:：]\s*([^\n]{2,80})(?:\n|$)/iu,
+    /([\p{Script=Han}A-Za-z· ]{2,40}(?:大学|学院))/u,
+  ]))
+  addProfileValue(values, 'major', matchValue(text, [
+    /(?:专业名称|所学专业|专业|major)\s*[:：]\s*([^\n]{2,60})(?:\n|$)/iu,
+    /(计算机科学与技术|计算机技术|软件工程|人工智能|数据科学与大数据技术|信息安全)/u,
+  ]))
+  addProfileValue(values, 'education', matchValue(text, [/(博士|硕士|本科|大专|ph\.?d|master|bachelor|associate degree)/iu]))
+  addProfileValue(values, 'graduation_year', matchValue(text, [/(20\d{2})\s*(?:届|年毕业|毕业)/u]))
+  addProfileValue(values, 'portfolio_url', matchValue(text, [/(https?:\/\/(?:www\.)?(?:github|gitlab)\.com\/[^\s)]+)/iu], 0))
+  return values
+}
+
+function matchValue(text: string, patterns: readonly RegExp[], group = 1): string | undefined {
+  for (const pattern of patterns) {
+    const value = pattern.exec(text)?.[group]
+    if (value !== undefined) return value.trim()
+  }
+  return undefined
+}
+
+function addProfileValue(
+  values: Map<ApplicationFormSemantic, string>,
+  semantic: ApplicationFormSemantic,
+  value: string | undefined,
+): void {
+  if (value === undefined) return
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, 500)
+  if (normalized.length > 0) values.set(semantic, normalized)
+}
+
+function isFillableControl(controlType: BrowserApplicationFormField['controlType']): boolean {
+  return new Set<BrowserApplicationFormField['controlType']>([
+    'text',
+    'email',
+    'tel',
+    'url',
+    'number',
+    'date',
+    'month',
+    'textarea',
+    'select',
+  ]).has(controlType)
+}
+
+function sameFieldIds(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.length === expected.length && actual.every((fieldId, index) => fieldId === expected[index])
 }
 
 function normalize(value: string): string {

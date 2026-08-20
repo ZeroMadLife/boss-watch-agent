@@ -3,6 +3,9 @@ import { isIP } from "node:net";
 import { createPageRevision } from "../capture/page-snapshot.js";
 import type { CaptureResult } from "../server/capture-api.js";
 import {
+  BOSS_SEARCH_MIN_NAVIGATION_INTERVAL_MS,
+  BOSS_SEARCH_RISK_COOLDOWN_MS,
+  BOSS_SEARCH_RUN_COOLDOWN_MS,
   type BrowserJobSearchInput,
   type BrowserJobSearchItem,
   type BrowserJobSearchResult,
@@ -14,11 +17,14 @@ import {
 const BOSS_HOST = "www.zhipin.com";
 const JOB_DETAIL_PATTERN = /^\/job_detail\/([a-zA-Z0-9_-]+)(?:\.html)?/u;
 const LOGIN_PATH_PATTERN = /\/web\/user\//u;
-const VERIFICATION_PATH_PATTERN = /(captcha|verify|security|risk)/iu;
+const VERIFICATION_PATH_PATTERN = /(captcha|verify|verification)/iu;
+const RISK_CONTROL_PATH_PATTERN = /(security|risk)/iu;
 const OFFICIAL_LOGIN_PATH_PATTERN = /\/(?:login|sign-?in|auth)(?:\/|$)/iu;
 const OFFICIAL_VERIFICATION_PATH_PATTERN = /\/(?:captcha|verify|verification|security|risk)(?:\/|$)/iu;
 const DISCOVERY_TTL_MS = 5 * 60 * 1000;
 const MAX_APPLICATION_FORM_FIELDS = 150;
+const SEARCH_LIST_INSPECTION_ATTEMPTS = 6;
+const SEARCH_LIST_INSPECTION_INTERVAL_MS = 1_000;
 
 export interface BossHunterBrowserRuntime {
   health(): Promise<BossHunterRuntimeHealth | undefined>;
@@ -26,7 +32,7 @@ export interface BossHunterBrowserRuntime {
   evaluate(targetId: string, expression: string): Promise<unknown>;
   newTab(url: string): Promise<string>;
   close(targetId: string): Promise<void>;
-  waitForLoad?(targetId: string, timeoutMs?: number): Promise<void>;
+  waitForLoad?(targetId: string, timeoutMs?: number, signal?: AbortSignal): Promise<void>;
   scroll?(targetId: string, y: number): Promise<void>;
 }
 
@@ -142,6 +148,34 @@ export type InspectApplicationFormResult =
       readonly targetCount: 0;
     };
 
+export interface FillApplicationFormInput {
+  readonly expectedUrl: string;
+  readonly expectedFormHash: string;
+  readonly fields: readonly {
+    readonly fieldId: string;
+    readonly value: string;
+  }[];
+}
+
+export type FillApplicationFormResult =
+  | Exclude<InspectApplicationFormResult, { readonly status: "ready" }>
+  | {
+      readonly status: "conflict";
+      readonly reason: "form_changed" | "field_state_changed" | "fill_plan_mismatch";
+      readonly targetCount: 1;
+      readonly currentFormHash?: string;
+    }
+  | {
+      readonly status: "filled";
+      readonly targetCount: 1;
+      readonly page: Extract<InspectApplicationFormResult, { readonly status: "ready" }>["page"];
+      readonly formHash: string;
+      readonly filledFieldIds: readonly string[];
+      readonly filledCount: number;
+      readonly requiresHumanReview: true;
+      readonly submitted: false;
+    };
+
 export type BrowserRunStatus =
   | {
       readonly status: "ready";
@@ -160,13 +194,30 @@ export type BrowserRunStatus =
     }
   | {
       readonly status: "human_required";
-      readonly reason: "login" | "verification";
+      readonly reason: "login" | "verification" | "risk_control";
       readonly targetCount: number;
     }
   | {
       readonly status: "environment_interrupted";
       readonly reason: "runtime_unavailable" | "browser_disconnected";
       readonly targetCount: 0;
+    };
+
+export type BrowserSearchGuardStatus =
+  | {
+      readonly state: "ready";
+      readonly guarded: false;
+      readonly observedAt: string;
+      readonly scope: "controller_process";
+      readonly resetsOnRestart: true;
+    }
+  | {
+      readonly state: "search_in_progress" | "search_cooldown" | "risk_cooldown";
+      readonly guarded: true;
+      readonly retryAfterMs: number;
+      readonly observedAt: string;
+      readonly scope: "controller_process";
+      readonly resetsOnRestart: true;
     };
 
 export type CaptureCurrentJobResult =
@@ -200,7 +251,7 @@ export type CaptureCurrentConversationResult =
     }
   | {
       readonly status: "human_required";
-      readonly reason: "login" | "verification";
+      readonly reason: "login" | "verification" | "risk_control";
       readonly targetCount: number;
     }
   | {
@@ -247,7 +298,7 @@ export type BrowserJobDiscoveryResult =
     }
   | {
       readonly status: "human_required";
-      readonly reason: "login" | "verification";
+      readonly reason: "login" | "verification" | "risk_control";
       readonly targetCount: number;
     }
   | {
@@ -279,6 +330,10 @@ export interface BossBrowserRunControllerOptions {
   readonly now?: () => Date;
   readonly captureIdFactory?: () => string;
   readonly discoveryIdFactory?: () => string;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly searchMinNavigationIntervalMs?: number;
+  readonly searchRunCooldownMs?: number;
+  readonly searchRiskCooldownMs?: number;
 }
 
 interface ReadyJobInspection {
@@ -292,7 +347,7 @@ interface ReadyJobInspection {
 
 interface HumanRequiredInspection {
   readonly status: "human_required";
-  readonly reason: "login" | "verification";
+  readonly reason: "login" | "verification" | "risk_control";
   readonly sourceUrl?: string;
 }
 
@@ -328,6 +383,28 @@ interface ApplicationFormHumanRequiredInspection {
   readonly sourceUrl?: string;
 }
 
+interface ApplicationFormFillRequest {
+  readonly fieldId: string;
+  readonly ordinal: number;
+  readonly controlType: BrowserApplicationFormControlType;
+  readonly inputType: string;
+  readonly label: string;
+  readonly name: string;
+  readonly value: string;
+}
+
+type ApplicationFormFillInspection =
+  | {
+      readonly status: "filled";
+      readonly sourceUrl: string;
+      readonly ordinals: readonly number[];
+    }
+  | {
+      readonly status: "human_required";
+      readonly reason: "login" | "verification" | "risk_control";
+    }
+  | { readonly status: "fill_plan_mismatch" };
+
 interface DiscoveryEntry {
   readonly targetId: string;
   readonly jobs: readonly BrowserJobSummary[];
@@ -349,6 +426,15 @@ export class BossBrowserRunController {
   readonly #now: () => Date;
   readonly #captureIdFactory: () => string;
   readonly #discoveryIdFactory: () => string;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
+  readonly #searchMinNavigationIntervalMs: number;
+  readonly #searchRunCooldownMs: number;
+  readonly #searchRiskCooldownMs: number;
+  #searchInProgress = false;
+  #lastSearchNavigationAt?: number;
+  #searchNavigationCount = 0;
+  #nextSearchAllowedAt = 0;
+  #riskCooldownUntil = 0;
   readonly #discoveries = new Map<string, DiscoveryEntry>();
 
   constructor(options: BossBrowserRunControllerOptions) {
@@ -358,6 +444,17 @@ export class BossBrowserRunController {
     this.#now = options.now ?? (() => new Date());
     this.#captureIdFactory = options.captureIdFactory ?? randomUUID;
     this.#discoveryIdFactory = options.discoveryIdFactory ?? randomUUID;
+    this.#sleep =
+      options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.#searchMinNavigationIntervalMs = nonNegativeDuration(
+      options.searchMinNavigationIntervalMs,
+      BOSS_SEARCH_MIN_NAVIGATION_INTERVAL_MS,
+    );
+    this.#searchRunCooldownMs = nonNegativeDuration(options.searchRunCooldownMs, BOSS_SEARCH_RUN_COOLDOWN_MS);
+    this.#searchRiskCooldownMs = nonNegativeDuration(
+      options.searchRiskCooldownMs,
+      BOSS_SEARCH_RISK_COOLDOWN_MS,
+    );
   }
 
   async discoverJobs(): Promise<BrowserJobDiscoveryResult> {
@@ -440,106 +537,87 @@ export class BossBrowserRunController {
     }
 
     const emptyItems: BrowserJobSearchItem[] = [];
-    const health = await this.#readHealth();
-    if (health === undefined) {
+    const currentTime = this.#now().getTime();
+    if (this.#searchInProgress) {
       return {
-        status: "environment_interrupted",
-        reason: "runtime_unavailable",
+        status: "guarded",
+        reason: "search_in_progress",
+        retryAfterMs: this.#searchMinNavigationIntervalMs,
         targetCount: 0,
         plan,
         pagesVisited: 0,
-        items: emptyItems,
+        items: [],
       };
     }
-
-    const items: BrowserJobSearchItem[] = [];
-    const seen = new Set<string>();
-    let pagesVisited = 0;
-    for (let page = 1; page <= plan.maxPages && items.length < plan.maxJobs; page += 1) {
-      if (signal?.aborted) return { status: "cancelled", plan, pagesVisited, items };
-      let listTargetId: string;
-      try {
-        listTargetId = await this.#runtime.newTab(bossSearchUrl(plan, page));
-        await this.#runtime.waitForLoad?.(listTargetId, 15_000);
-      } catch {
+    if (currentTime < this.#riskCooldownUntil) {
+      return {
+        status: "guarded",
+        reason: "risk_cooldown",
+        retryAfterMs: this.#riskCooldownUntil - currentTime,
+        targetCount: 0,
+        plan,
+        pagesVisited: 0,
+        items: [],
+      };
+    }
+    if (currentTime < this.#nextSearchAllowedAt) {
+      return {
+        status: "guarded",
+        reason: "search_cooldown",
+        retryAfterMs: this.#nextSearchAllowedAt - currentTime,
+        targetCount: 0,
+        plan,
+        pagesVisited: 0,
+        items: [],
+      };
+    }
+    this.#searchInProgress = true;
+    this.#lastSearchNavigationAt = undefined;
+    this.#searchNavigationCount = 0;
+    try {
+      const health = await this.#readHealth();
+      if (health === undefined) {
         return {
           status: "environment_interrupted",
-          reason: "browser_disconnected",
+          reason: "runtime_unavailable",
           targetCount: 0,
           plan,
-          pagesVisited,
-          items,
+          pagesVisited: 0,
+          items: emptyItems,
         };
       }
 
-      let inspected: JobListInspection;
-      try {
-        inspected = parseJobListInspection(
-          await this.#runtime.evaluate(listTargetId, JOB_LIST_INSPECTION_EXPRESSION),
-        );
-      } catch {
-        return {
-          status: "environment_interrupted",
-          reason: "browser_disconnected",
-          targetCount: 0,
-          plan,
-          pagesVisited,
-          items,
-        };
-      }
-      if (inspected.status === "human_required") {
-        return {
-          status: "human_required",
-          reason: inspected.reason,
-          targetCount: 1,
-          plan,
-          pagesVisited,
-          items,
-        };
-      }
-      if (inspected.status === "page_adapter_mismatch") {
-        await this.#closeQuietly(listTargetId);
-        return {
-          status: "no_supported_tab",
-          reason: "no_job_list",
-          targetCount: 1,
-          plan,
-          pagesVisited,
-          items,
-        };
-      }
-      if (!isBossSearchUrl(inspected.sourceUrl)) {
-        await this.#closeQuietly(listTargetId);
-        return {
-          status: "no_supported_tab",
-          reason: "no_boss_page",
-          targetCount: 0,
-          plan,
-          pagesVisited,
-          items,
-        };
-      }
-      pagesVisited += 1;
-      if (inspected.jobs.length === 0) {
-        await this.#closeQuietly(listTargetId);
-        return items.length === 0
-          ? { status: "no_supported_tab", reason: "no_job_cards", targetCount: 1, plan, pagesVisited, items }
-          : { status: "partial", plan, pagesVisited, items };
-      }
-
-      for (const job of inspected.jobs) {
-        if (items.length >= plan.maxJobs) break;
-        if (signal?.aborted) {
-          await this.#closeQuietly(listTargetId);
-          return { status: "cancelled", plan, pagesVisited, items };
-        }
-        if (seen.has(job.externalJobId)) continue;
-        seen.add(job.externalJobId);
-
-        let detailTargetId: string;
+      const items: BrowserJobSearchItem[] = [];
+      const seen = new Set<string>();
+      let pagesVisited = 0;
+      for (let page = 1; page <= plan.maxPages && items.length < plan.maxJobs; page += 1) {
+        if (signal?.aborted) return { status: "cancelled", plan, pagesVisited, items };
+        let listTargetId: string | undefined;
         try {
-          detailTargetId = await this.#runtime.newTab(job.jobUrl);
-          await this.#runtime.waitForLoad?.(detailTargetId, 15_000);
+          await this.#paceSearchNavigation(signal);
+          if (signal?.aborted) return { status: "cancelled", plan, pagesVisited, items };
+          listTargetId = await this.#runtime.newTab(bossSearchUrl(plan, page));
+          await this.#runtime.waitForLoad?.(listTargetId, 15_000, signal);
+          if (signal?.aborted) {
+            await this.#closeQuietly(listTargetId);
+            return { status: "cancelled", plan, pagesVisited, items };
+          }
+        } catch {
+          if (listTargetId !== undefined) await this.#closeQuietly(listTargetId);
+          return {
+            status: "environment_interrupted",
+            reason: "browser_disconnected",
+            targetCount: 0,
+            plan,
+            pagesVisited,
+            items,
+          };
+        }
+        if (listTargetId === undefined) throw new Error("browser_target_missing");
+
+        let inspected: JobListInspection;
+        try {
+          inspected = await this.#inspectJobList(listTargetId, signal);
         } catch {
           await this.#closeQuietly(listTargetId);
           return {
@@ -551,47 +629,180 @@ export class BossBrowserRunController {
             items,
           };
         }
-        const captured = await this.#captureJobTarget({
-          targetId: detailTargetId,
-          type: "page",
-          url: job.jobUrl,
-        });
-        if (captured.status === "ok") {
-          await this.#closeQuietly(detailTargetId);
-          items.push({ status: "captured", job, applicationId: captured.applicationId });
-          continue;
-        }
-        if (captured.status === "human_required") {
+        if (signal?.aborted) {
           await this.#closeQuietly(listTargetId);
+          return { status: "cancelled", plan, pagesVisited, items };
+        }
+        if (inspected.status === "human_required") {
+          this.#recordSearchRisk(inspected.reason);
           return {
             status: "human_required",
-            reason: captured.reason,
+            reason: inspected.reason,
             targetCount: 1,
             plan,
             pagesVisited,
             items,
           };
         }
-        if (captured.status === "environment_interrupted") {
+        if (inspected.status === "page_adapter_mismatch") {
           await this.#closeQuietly(listTargetId);
           return {
-            status: "environment_interrupted",
-            reason: captured.reason,
+            status: "no_supported_tab",
+            reason: "no_job_list",
+            targetCount: 1,
+            plan,
+            pagesVisited,
+            items,
+          };
+        }
+        if (!isBossSearchUrl(inspected.sourceUrl)) {
+          const handoffReason = bossHandoffReason(inspected.sourceUrl);
+          if (handoffReason !== undefined) {
+            this.#recordSearchRisk(handoffReason);
+            return {
+              status: "human_required",
+              reason: handoffReason,
+              targetCount: 1,
+              plan,
+              pagesVisited,
+              items,
+            };
+          }
+          await this.#closeQuietly(listTargetId);
+          return {
+            status: "no_supported_tab",
+            reason: "no_boss_page",
             targetCount: 0,
             plan,
             pagesVisited,
             items,
           };
         }
-        items.push({
-          status: "failed",
-          job,
-          reason: captured.status === "page_adapter_mismatch" ? "page_adapter_mismatch" : captured.status,
-        });
+        pagesVisited += 1;
+        if (inspected.jobs.length === 0) {
+          await this.#closeQuietly(listTargetId);
+          return items.length === 0
+            ? {
+                status: "no_supported_tab",
+                reason: "no_job_cards",
+                targetCount: 1,
+                plan,
+                pagesVisited,
+                items,
+              }
+            : { status: "partial", plan, pagesVisited, items };
+        }
+
+        for (const job of inspected.jobs) {
+          if (items.length >= plan.maxJobs) break;
+          if (signal?.aborted) {
+            await this.#closeQuietly(listTargetId);
+            return { status: "cancelled", plan, pagesVisited, items };
+          }
+          if (seen.has(job.externalJobId)) continue;
+          seen.add(job.externalJobId);
+
+          let detailTargetId: string | undefined;
+          try {
+            await this.#paceSearchNavigation(signal);
+            if (signal?.aborted) {
+              await this.#closeQuietly(listTargetId);
+              return { status: "cancelled", plan, pagesVisited, items };
+            }
+            detailTargetId = await this.#runtime.newTab(job.jobUrl);
+            await this.#runtime.waitForLoad?.(detailTargetId, 15_000, signal);
+            if (signal?.aborted) {
+              await this.#closeQuietly(detailTargetId);
+              await this.#closeQuietly(listTargetId);
+              return { status: "cancelled", plan, pagesVisited, items };
+            }
+          } catch {
+            if (detailTargetId !== undefined) await this.#closeQuietly(detailTargetId);
+            await this.#closeQuietly(listTargetId);
+            return {
+              status: "environment_interrupted",
+              reason: "browser_disconnected",
+              targetCount: 0,
+              plan,
+              pagesVisited,
+              items,
+            };
+          }
+          if (detailTargetId === undefined) throw new Error("browser_target_missing");
+          const captured = await this.#captureJobTarget({
+            targetId: detailTargetId,
+            type: "page",
+            url: job.jobUrl,
+          });
+          if (captured.status === "ok") {
+            await this.#closeQuietly(detailTargetId);
+            items.push({ status: "captured", job, applicationId: captured.applicationId });
+            continue;
+          }
+          if (captured.status === "human_required") {
+            this.#recordSearchRisk(captured.reason);
+            await this.#closeQuietly(listTargetId);
+            return {
+              status: "human_required",
+              reason: captured.reason,
+              targetCount: 1,
+              plan,
+              pagesVisited,
+              items,
+            };
+          }
+          if (captured.status === "environment_interrupted") {
+            await this.#closeQuietly(detailTargetId);
+            await this.#closeQuietly(listTargetId);
+            return {
+              status: "environment_interrupted",
+              reason: captured.reason,
+              targetCount: 0,
+              plan,
+              pagesVisited,
+              items,
+            };
+          }
+          await this.#closeQuietly(detailTargetId);
+          items.push({
+            status: "failed",
+            job,
+            reason: captured.status === "page_adapter_mismatch" ? "page_adapter_mismatch" : captured.status,
+          });
+        }
+        await this.#closeQuietly(listTargetId);
       }
-      await this.#closeQuietly(listTargetId);
+      return { status: items.length === 0 ? "partial" : "ok", plan, pagesVisited, items };
+    } finally {
+      this.#searchInProgress = false;
+      if (this.#searchNavigationCount > 0) {
+        this.#nextSearchAllowedAt = Math.max(
+          this.#nextSearchAllowedAt,
+          this.#now().getTime() + this.#searchRunCooldownMs,
+        );
+      }
     }
-    return { status: items.length === 0 ? "partial" : "ok", plan, pagesVisited, items };
+  }
+
+  searchGuardStatus(): BrowserSearchGuardStatus {
+    const now = this.#now();
+    const currentTime = now.getTime();
+    if (this.#searchInProgress) {
+      return searchGuarded("search_in_progress", this.#searchMinNavigationIntervalMs, now);
+    }
+    if (currentTime < this.#riskCooldownUntil) {
+      return searchGuarded("risk_cooldown", this.#riskCooldownUntil - currentTime, now);
+    }
+    if (currentTime < this.#nextSearchAllowedAt) {
+      return searchGuarded("search_cooldown", this.#nextSearchAllowedAt - currentTime, now);
+    }
+    return {
+      state: "ready",
+      guarded: false,
+      observedAt: now.toISOString(),
+      scope: "controller_process",
+      resetsOnRestart: true,
+    };
   }
 
   async captureDiscoveredJob(
@@ -801,6 +1012,114 @@ export class BossBrowserRunController {
     };
   }
 
+  /**
+   * Fill only an exact, freshly re-inspected standard-form plan. The caller
+   * supplies field ids created by inspectApplicationForm; CSS, JavaScript,
+   * file controls, consent controls, navigation and submit are not accepted.
+   */
+  async fillApplicationForm(input: FillApplicationFormInput): Promise<FillApplicationFormResult> {
+    if (
+      !/^[a-f0-9]{64}$/u.test(input.expectedFormHash) ||
+      input.fields.length === 0 ||
+      input.fields.length > 50 ||
+      !uniqueFillFields(input.fields)
+    ) {
+      return { status: "invalid_request", reason: "unsupported_official_url", targetCount: 0 };
+    }
+    const inspected = await this.inspectApplicationForm(input.expectedUrl);
+    if (inspected.status !== "ready") return inspected;
+    if (inspected.page.formHash !== input.expectedFormHash) {
+      return {
+        status: "conflict",
+        reason: "form_changed",
+        targetCount: 1,
+        currentFormHash: inspected.page.formHash,
+      };
+    }
+    const requested = input.fields.map((request) => {
+      const field = inspected.fields.find((candidate) => candidate.fieldId === request.fieldId);
+      if (
+        field === undefined ||
+        field.disabled ||
+        field.readOnly ||
+        field.currentState !== "empty" ||
+        !isFillableControl(field.controlType) ||
+        request.value.trim().length === 0 ||
+        request.value.length > 2_000 ||
+        request.value.includes("\u0000")
+      )
+        return undefined;
+      return {
+        fieldId: field.fieldId,
+        ordinal: field.ordinal,
+        controlType: field.controlType,
+        inputType: field.inputType,
+        label: field.label,
+        name: field.name ?? "",
+        value: request.value,
+      };
+    });
+    if (requested.some((field) => field === undefined)) {
+      return { status: "conflict", reason: "field_state_changed", targetCount: 1 };
+    }
+    let targets: BossHunterBrowserTarget[];
+    try {
+      targets = await this.#runtime.targets();
+    } catch {
+      return { status: "environment_interrupted", reason: "browser_disconnected", targetCount: 0 };
+    }
+    const expected = parseSafeOfficialUrl(input.expectedUrl);
+    if (expected === undefined) {
+      return { status: "invalid_request", reason: "unsupported_official_url", targetCount: 0 };
+    }
+    const selected = selectApplicationFormTarget(targets, expected);
+    if (selected.kind === "result") {
+      return selected.value.status === "ready"
+        ? { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 }
+        : selected.value;
+    }
+    let filled: ApplicationFormFillInspection;
+    try {
+      filled = parseApplicationFormFillInspection(
+        await this.#runtime.evaluate(
+          selected.target.targetId,
+          createApplicationFormFillExpression(requested as ApplicationFormFillRequest[]),
+        ),
+      );
+    } catch {
+      return { status: "environment_interrupted", reason: "browser_disconnected", targetCount: 0 };
+    }
+    if (filled.status === "human_required") {
+      return { status: "human_required", reason: filled.reason, targetCount: 1 };
+    }
+    if (filled.status !== "filled") {
+      return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
+    }
+    const actual = parseSafeOfficialUrl(filled.sourceUrl);
+    if (actual === undefined || !sameOfficialOrigin(expected, actual)) {
+      return { status: "human_required", reason: "page_identity_mismatch", targetCount: 1 };
+    }
+    const filledFieldIds = filled.ordinals.map(
+      (ordinal) => requested.find((field) => field?.ordinal === ordinal)?.fieldId,
+    );
+    if (
+      filledFieldIds.some((fieldId) => fieldId === undefined) ||
+      filledFieldIds.length !== requested.length
+    ) {
+      return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
+    }
+    return {
+      status: "filled",
+      targetCount: 1,
+      page: inspected.page,
+      formHash: inspected.page.formHash,
+      filledFieldIds: filledFieldIds as string[],
+      filledCount: filledFieldIds.length,
+      requiresHumanReview: true,
+      submitted: false,
+    };
+  }
+
   async pollFixedJob(jobUrl: string, externalJobId: string): Promise<PollFixedJobResult> {
     if (!isSupportedJobUrl(jobUrl)) {
       return { status: "invalid_request", reason: "unsupported_job_url", targetCount: 0 };
@@ -905,6 +1224,63 @@ export class BossBrowserRunController {
       // Cleanup is best effort; local captures already committed remain valid.
     }
   }
+
+  /**
+   * BOSS hydrates result cards after the document reports `complete`. Match
+   * BossHunter's bounded DOM polling so a normal async render is not mistaken
+   * for an empty or unsupported page. Login/verification remains an immediate
+   * handoff and never triggers a retry loop.
+   */
+  async #inspectJobList(targetId: string, signal?: AbortSignal): Promise<JobListInspection> {
+    let inspected: JobListInspection = { status: "page_adapter_mismatch" };
+    for (let attempt = 0; attempt < SEARCH_LIST_INSPECTION_ATTEMPTS; attempt += 1) {
+      if (signal?.aborted) return inspected;
+      inspected = parseJobListInspection(
+        await this.#runtime.evaluate(targetId, JOB_LIST_INSPECTION_EXPRESSION),
+      );
+      if (inspected.status === "human_required") return inspected;
+      if (inspected.status === "ready" && inspected.jobs.length > 0) return inspected;
+      if (attempt < SEARCH_LIST_INSPECTION_ATTEMPTS - 1) {
+        await this.#sleep(SEARCH_LIST_INSPECTION_INTERVAL_MS);
+      }
+    }
+    return inspected;
+  }
+
+  async #paceSearchNavigation(signal?: AbortSignal): Promise<void> {
+    const currentTime = this.#now().getTime();
+    const remaining =
+      this.#lastSearchNavigationAt === undefined
+        ? 0
+        : Math.max(0, this.#searchMinNavigationIntervalMs - (currentTime - this.#lastSearchNavigationAt));
+    if (remaining > 0 && !signal?.aborted) await this.#sleep(remaining);
+    if (signal?.aborted) return;
+    this.#lastSearchNavigationAt = this.#now().getTime();
+    this.#searchNavigationCount += 1;
+  }
+
+  #recordSearchRisk(reason: "login" | "verification" | "risk_control"): void {
+    if (reason !== "risk_control") return;
+    this.#riskCooldownUntil = Math.max(
+      this.#riskCooldownUntil,
+      this.#now().getTime() + this.#searchRiskCooldownMs,
+    );
+  }
+}
+
+function searchGuarded(
+  state: "search_in_progress" | "search_cooldown" | "risk_cooldown",
+  retryAfterMs: number,
+  now: Date,
+): BrowserSearchGuardStatus {
+  return {
+    state,
+    guarded: true,
+    retryAfterMs: Math.max(0, retryAfterMs),
+    observedAt: now.toISOString(),
+    scope: "controller_process",
+    resetsOnRestart: true,
+  };
 }
 
 export const JOB_INSPECTION_EXPRESSION = `(() => {
@@ -912,8 +1288,11 @@ export const JOB_INSPECTION_EXPRESSION = `(() => {
   if (document.querySelector('.login-register-content, .login-dialog, [class*=login-dialog]')) {
     return { status: 'human_required', reason: 'login', sourceUrl: location.href };
   }
-  if (document.querySelector('.captcha, [class*=captcha], [class*=verify-dialog], [class*=security-check]')) {
+  if (document.querySelector('.captcha, [class*=captcha], [class*=verify-dialog]')) {
     return { status: 'human_required', reason: 'verification', sourceUrl: location.href };
+  }
+  if (document.querySelector('[class*=risk-control], [class*=security-check], [class*=abnormal]')) {
+    return { status: 'human_required', reason: 'risk_control', sourceUrl: location.href };
   }
   const match = location.pathname.match(/^\\/job_detail\\/([a-zA-Z0-9_-]+)(?:\\.html)?/u);
   if (!match) return { status: 'page_adapter_mismatch' };
@@ -937,8 +1316,11 @@ export const CONVERSATION_INSPECTION_EXPRESSION = `(() => {
   if (document.querySelector('.login-register-content, .login-dialog, [class*=login-dialog]')) {
     return { status: 'human_required', reason: 'login', sourceUrl: location.href };
   }
-  if (document.querySelector('.captcha, [class*=captcha], [class*=verify-dialog], [class*=security-check]')) {
+  if (document.querySelector('.captcha, [class*=captcha], [class*=verify-dialog]')) {
     return { status: 'human_required', reason: 'verification', sourceUrl: location.href };
+  }
+  if (document.querySelector('[class*=risk-control], [class*=security-check], [class*=abnormal]')) {
+    return { status: 'human_required', reason: 'risk_control', sourceUrl: location.href };
   }
   if (location.pathname !== '/web/geek/chat') return { status: 'page_adapter_mismatch' };
   const items = Array.from(document.querySelectorAll('.message-item, .chat-message'));
@@ -1041,6 +1423,103 @@ export const APPLICATION_FORM_INSPECTION_EXPRESSION = `(() => {
   return { status: 'ready', sourceUrl, title: clean(document.title), fields };
 })()`;
 
+export function createApplicationFormFillExpression(fields: readonly ApplicationFormFillRequest[]): string {
+  const payload = JSON.stringify(fields)
+    .replace(/\u2028/gu, "\\u2028")
+    .replace(/\u2029/gu, "\\u2029");
+  return `(() => {
+  const requested = ${payload};
+  const clean = (value, max = 160) => String(value || '')
+    .replace(/[\\u0000-\\u001f\\u007f]/gu, ' ')
+    .replace(/\\s+/gu, ' ')
+    .trim()
+    .slice(0, max);
+  const sourceUrl = location.href;
+  if (document.querySelector('input[type=password], form[action*=login i], [class*=login-form i], [id*=login-form i]')) {
+    return { status: 'human_required', reason: 'login' };
+  }
+  if (document.querySelector('[class*=captcha i], [id*=captcha i], iframe[src*=captcha i], [class*=verify i], [id*=verify i]')) {
+    return { status: 'human_required', reason: 'verification' };
+  }
+  if (document.querySelector('[class*=risk-control i], [id*=risk-control i], [class*=security-check i], [id*=security-check i]')) {
+    return { status: 'human_required', reason: 'risk_control' };
+  }
+  const isVisible = (element) => {
+    if (element.hidden || element.closest('[hidden], [aria-hidden=true]')) return false;
+    const style = getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const labelledBy = (element) => clean((element.getAttribute('aria-labelledby') || '')
+    .split(/\\s+/u)
+    .map((id) => document.getElementById(id)?.textContent || '')
+    .join(' '));
+  const labelFor = (element) => {
+    const explicit = Array.from(document.querySelectorAll('label')).find((label) =>
+      element.id && label.getAttribute('for') === element.id
+    );
+    const wrapping = element.closest('label');
+    const container = element.closest('[class*=form-item i], [class*=form-field i], .form-group, fieldset');
+    const nearby = container?.querySelector('label, legend, [class*=label i]');
+    return clean(
+      explicit?.textContent || wrapping?.textContent || element.getAttribute('aria-label') ||
+      labelledBy(element) || nearby?.textContent || element.getAttribute('placeholder') ||
+      element.getAttribute('name') || ''
+    );
+  };
+  const controlType = (element) => {
+    if (element.tagName === 'TEXTAREA') return 'textarea';
+    if (element.tagName === 'SELECT') return 'select';
+    const type = clean(element.getAttribute('type') || 'text', 32).toLowerCase();
+    return ['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'checkbox', 'radio', 'file'].includes(type)
+      ? type
+      : 'other';
+  };
+  const controls = Array.from(document.querySelectorAll('input, textarea, select'))
+    .filter((element) => {
+      const type = clean(element.getAttribute('type') || 'text', 32).toLowerCase();
+      return isVisible(element) && !['hidden', 'submit', 'reset', 'button', 'image'].includes(type);
+    });
+  const normalizeOption = (value) => clean(value, 500).toLocaleLowerCase('zh-CN');
+  const prepared = requested.map((request) => {
+    const element = controls[request.ordinal];
+    if (
+      !element || element.disabled || element.readOnly ||
+      controlType(element) !== request.controlType ||
+      clean(element.getAttribute('type') || element.tagName.toLowerCase(), 32).toLowerCase() !== request.inputType ||
+      labelFor(element) !== request.label ||
+      clean(element.getAttribute('name') || '', 120) !== request.name ||
+      String(element.value || '').length > 0
+    ) return null;
+    if (element.tagName === 'SELECT') {
+      const wanted = normalizeOption(request.value);
+      const option = Array.from(element.options).find((candidate) =>
+        normalizeOption(candidate.value) === wanted || normalizeOption(candidate.textContent) === wanted
+      );
+      return option ? { request, element, option } : null;
+    }
+    if (!['INPUT', 'TEXTAREA'].includes(element.tagName)) return null;
+    return { request, element };
+  });
+  if (prepared.some((entry) => entry === null)) return { status: 'fill_plan_mismatch' };
+  for (const entry of prepared) {
+    const { element, option, request } = entry;
+    if (element.tagName === 'SELECT') {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+      if (!setter || !option) return { status: 'fill_plan_mismatch' };
+      setter.call(element, option.value);
+    } else {
+      const prototype = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (!setter) return { status: 'fill_plan_mismatch' };
+      setter.call(element, request.value);
+    }
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  return { status: 'filled', sourceUrl, ordinals: prepared.map((entry) => entry.request.ordinal) };
+})()`;
+}
+
 export const JOB_LIST_INSPECTION_EXPRESSION = `(() => {
   const text = (root, selectors) => {
     for (const selector of selectors) {
@@ -1052,8 +1531,11 @@ export const JOB_LIST_INSPECTION_EXPRESSION = `(() => {
   if (document.querySelector('.login-register-content, .login-dialog, [class*=login-dialog]')) {
     return { status: 'human_required', reason: 'login', sourceUrl: location.href };
   }
-  if (document.querySelector('.captcha, [class*=captcha], [class*=verify-dialog], [class*=security-check]')) {
+  if (document.querySelector('.captcha, [class*=captcha], [class*=verify-dialog]')) {
     return { status: 'human_required', reason: 'verification', sourceUrl: location.href };
+  }
+  if (document.querySelector('[class*=risk-control], [class*=security-check], [class*=abnormal]')) {
+    return { status: 'human_required', reason: 'risk_control', sourceUrl: location.href };
   }
   const jobs = [];
   const seen = new Set();
@@ -1107,6 +1589,12 @@ function selectTarget(
   if (verificationTarget !== undefined) {
     return { kind: "result", value: { status: "human_required", reason: "verification", targetCount: 0 } };
   }
+  const riskTarget = bossTargets.find((target) =>
+    RISK_CONTROL_PATH_PATTERN.test(new URL(target.url ?? "").pathname),
+  );
+  if (riskTarget !== undefined) {
+    return { kind: "result", value: { status: "human_required", reason: "risk_control", targetCount: 0 } };
+  }
   const jobs = bossTargets.filter((target) => isJobDetailUrl(target.url));
   if (jobs.length === 0)
     return { kind: "result", value: { status: "no_supported_tab", reason: "no_boss_page", targetCount: 0 } };
@@ -1119,6 +1607,19 @@ function selectTarget(
   return target === undefined
     ? { kind: "result", value: { status: "no_supported_tab", reason: "no_boss_page", targetCount: 0 } }
     : { kind: "ready", target };
+}
+
+function bossHandoffReason(sourceUrl: string): "login" | "verification" | "risk_control" | undefined {
+  try {
+    const url = new URL(sourceUrl);
+    if (!isBossUrl(sourceUrl)) return undefined;
+    if (LOGIN_PATH_PATTERN.test(url.pathname)) return "login";
+    if (VERIFICATION_PATH_PATTERN.test(url.pathname)) return "verification";
+    if (RISK_CONTROL_PATH_PATTERN.test(url.pathname)) return "risk_control";
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 function selectJobListTarget(
@@ -1136,6 +1637,12 @@ function selectJobListTarget(
   );
   if (verificationTarget !== undefined) {
     return { kind: "result", value: { status: "human_required", reason: "verification", targetCount: 1 } };
+  }
+  const riskTarget = bossTargets.find((target) =>
+    RISK_CONTROL_PATH_PATTERN.test(new URL(target.url ?? "").pathname),
+  );
+  if (riskTarget !== undefined) {
+    return { kind: "result", value: { status: "human_required", reason: "risk_control", targetCount: 1 } };
   }
   if (bossTargets.length === 0) {
     return { kind: "result", value: { status: "no_supported_tab", reason: "no_boss_page", targetCount: 0 } };
@@ -1171,6 +1678,12 @@ function selectConversationTarget(
   );
   if (verificationTarget !== undefined) {
     return { kind: "result", value: { status: "human_required", reason: "verification", targetCount: 0 } };
+  }
+  const riskTarget = bossTargets.find((target) =>
+    RISK_CONTROL_PATH_PATTERN.test(new URL(target.url ?? "").pathname),
+  );
+  if (riskTarget !== undefined) {
+    return { kind: "result", value: { status: "human_required", reason: "risk_control", targetCount: 0 } };
   }
   const conversationTargets = bossTargets.filter((target) => isConversationUrl(target.url));
   if (conversationTargets.length === 0) {
@@ -1263,7 +1776,10 @@ function summarizeTargets(targets: readonly BossHunterBrowserTarget[]): BrowserR
 
 function parseInspection(value: unknown): JobInspection {
   if (!isRecord(value) || typeof value.status !== "string") return { status: "page_adapter_mismatch" };
-  if (value.status === "human_required" && (value.reason === "login" || value.reason === "verification")) {
+  if (
+    value.status === "human_required" &&
+    (value.reason === "login" || value.reason === "verification" || value.reason === "risk_control")
+  ) {
     return { status: "human_required", reason: value.reason, sourceUrl: optionalString(value.sourceUrl) };
   }
   if (
@@ -1292,7 +1808,10 @@ function parseInspection(value: unknown): JobInspection {
 
 function parseJobListInspection(value: unknown): JobListInspection {
   if (!isRecord(value) || typeof value.status !== "string") return { status: "page_adapter_mismatch" };
-  if (value.status === "human_required" && (value.reason === "login" || value.reason === "verification")) {
+  if (
+    value.status === "human_required" &&
+    (value.reason === "login" || value.reason === "verification" || value.reason === "risk_control")
+  ) {
     return { status: "human_required", reason: value.reason, sourceUrl: optionalString(value.sourceUrl) };
   }
   if (value.status !== "ready" || typeof value.sourceUrl !== "string" || !Array.isArray(value.jobs)) {
@@ -1307,7 +1826,10 @@ function parseJobListInspection(value: unknown): JobListInspection {
 
 function parseConversationInspection(value: unknown): ConversationInspection {
   if (!isRecord(value) || typeof value.status !== "string") return { status: "page_adapter_mismatch" };
-  if (value.status === "human_required" && (value.reason === "login" || value.reason === "verification")) {
+  if (
+    value.status === "human_required" &&
+    (value.reason === "login" || value.reason === "verification" || value.reason === "risk_control")
+  ) {
     return { status: "human_required", reason: value.reason, sourceUrl: optionalString(value.sourceUrl) };
   }
   if (
@@ -1363,6 +1885,33 @@ function parseApplicationFormInspection(value: unknown): ApplicationFormInspecti
     sourceUrl: value.sourceUrl,
     ...(title === undefined ? {} : { title }),
     fields,
+  };
+}
+
+function parseApplicationFormFillInspection(value: unknown): ApplicationFormFillInspection {
+  if (!isRecord(value) || typeof value.status !== "string") return { status: "fill_plan_mismatch" };
+  if (
+    value.status === "human_required" &&
+    (value.reason === "login" || value.reason === "verification" || value.reason === "risk_control")
+  ) {
+    return { status: "human_required", reason: value.reason };
+  }
+  if (
+    value.status !== "filled" ||
+    typeof value.sourceUrl !== "string" ||
+    !Array.isArray(value.ordinals) ||
+    value.ordinals.length === 0 ||
+    value.ordinals.length > 50 ||
+    !value.ordinals.every(
+      (ordinal) => Number.isSafeInteger(ordinal) && ordinal >= 0 && ordinal < MAX_APPLICATION_FORM_FIELDS,
+    ) ||
+    new Set(value.ordinals).size !== value.ordinals.length
+  )
+    return { status: "fill_plan_mismatch" };
+  return {
+    status: "filled",
+    sourceUrl: value.sourceUrl,
+    ordinals: value.ordinals as number[],
   };
 }
 
@@ -1557,6 +2106,29 @@ function sameOfficialOrigin(expected: URL, actual: URL): boolean {
   );
 }
 
+function isFillableControl(controlType: BrowserApplicationFormControlType): boolean {
+  return new Set<BrowserApplicationFormControlType>([
+    "text",
+    "email",
+    "tel",
+    "url",
+    "number",
+    "date",
+    "month",
+    "textarea",
+    "select",
+  ]).has(controlType);
+}
+
+function uniqueFillFields(fields: FillApplicationFormInput["fields"]): boolean {
+  const ids = new Set<string>();
+  for (const field of fields) {
+    if (!/^form-field:[a-f0-9]{64}$/u.test(field.fieldId) || ids.has(field.fieldId)) return false;
+    ids.add(field.fieldId);
+  }
+  return true;
+}
+
 function redactUrl(value: URL): string {
   const redacted = new URL(value.toString());
   redacted.hash = "";
@@ -1566,6 +2138,12 @@ function redactUrl(value: URL): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function nonNegativeDuration(value: number | undefined, fallback: number): number {
+  const duration = value ?? fallback;
+  if (!Number.isFinite(duration) || duration < 0) throw new Error("invalid_search_guard_duration");
+  return duration;
 }
 
 function optionalBoundedString(value: unknown, maximum: number, allowEmpty = false): string | undefined {

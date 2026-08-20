@@ -200,5 +200,28 @@
       "matchLevel": "insufficient_evidence",
       "scoreRange": { "min": 24, "max": 24 }
     }
+  },
+  {
+    "caseId": "descriptive-fullstack-soft-location",
+    "tags": ["badcase", "descriptive-capability", "soft-location"],
+    "jd": {
+      "company": "虚构癸科技",
+      "role": "全栈软件开发工程师",
+      "description": "2027届招聘，本科及以上，工作地点深圳。负责前后端完整链路，要求 SSR/BFF、API 编排、性能调优、自动化测试和持续集成。"
+    },
+    "resume": {
+      "text": "候选人癸，2027届，硕士，福州。React、Java、Spring Boot；具备前后端交付、BFF、API 编排、性能优化、自动化测试和持续集成经验。"
+    },
+    "gold": {
+      "requiredSkills": ["Backend Engineering", "Full-stack Delivery", "Frontend Engineering", "API Integration", "Performance Optimization", "Test Automation", "CI/CD"],
+      "matchedSkills": ["Backend Engineering", "Full-stack Delivery", "Frontend Engineering", "API Integration", "Performance Optimization", "Test Automation", "CI/CD"],
+      "hardConstraints": {
+        "education": "matched",
+        "cohort": "matched",
+        "location": "unmatched"
+      },
+      "matchLevel": "strong",
+      "scoreRange": { "min": 90, "max": 90 }
+    }
   }
 ]

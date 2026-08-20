@@ -2,7 +2,7 @@
 
 日期：2026-08-18
 
-状态：设计已确认并进入分片交付；当前实现边界以 `docs/job-search-agent-spec.md` v0.21 为准
+状态：设计已确认并进入分片交付；当前实现边界以 `docs/job-search-agent-spec.md` v0.33 为准
 
 适用仓库：`boss-watch-agent`
 
@@ -531,7 +531,9 @@ handoff_required
 - 人工 URL/JD 核验；
 - 受控 ResumeVersion 导入、内容寻址本地工件和版本元数据查询；
 - DSH Web PDF/DOCX 选择、受控暂存和 preview 草稿；
-- `local-evidence-match-v2`、9-case 虚构 Gold/Badcase runner 和 PDF/DOCX 提取降级回归；
+- `local-evidence-match-v3` 脱敏摘要/描述性能力/地点软偏好、10-case 虚构 Gold/Badcase runner 和 PDF/DOCX 提取降级回归；
+- 持久化 Gate A、只接受 `leadId + gateAId` 的 `apply-preview-v2`、人工进度 preview/apply；
+- `status_change_confirmed` 到 Feishu 当前进度/投递时间的 preview -> explicit apply，以及看板 `sync_feishu` 导航；
 - 官网/ATS 标准表单的同源只读检查、现有值脱敏、简历字段可用性分类和 handoff fixture；
 - 本地跟进提醒；
 - 批次 prepare/status/resume 和 checkpoint；

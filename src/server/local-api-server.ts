@@ -21,6 +21,8 @@ const MAX_RESUME_UPLOADS_PER_SESSION = 20;
 const MAX_ACTIVE_RESUME_UPLOAD_SESSIONS = 32;
 const EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/([a-p]{32})$/u;
 const DEFAULT_DSH_WEB_ORIGIN = "http://127.0.0.1:3080";
+export const BOSS_WATCH_API_CONTRACT_VERSION = "2026-08-19.closed-loop-v1";
+const BOSS_WATCH_BUILD_IDENTITY = `boss-watch-agent@0.1.0+api-${BOSS_WATCH_API_CONTRACT_VERSION}`;
 const RESUME_MEDIA_TYPES: ReadonlyMap<string, string> = new Map([
   [".pdf", "application/pdf"],
   [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
@@ -67,6 +69,7 @@ export interface LocalApiServer {
 
 export function createLocalApiServer(options: LocalApiServerOptions): LocalApiServer {
   const now = options.now ?? (() => new Date());
+  const startedAt = now().toISOString();
   const tokenFactory = options.tokenFactory ?? (() => randomBytes(32).toString("base64url"));
   const pairingCode = options.pairingCode ?? String(randomInt(0, 1_000_000)).padStart(6, "0");
   if (!/^\d{6}$/u.test(pairingCode)) throw new Error("invalid_pairing_code");
@@ -144,6 +147,9 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
         database: "ready",
         runtimeMode: options.runtimeMode,
         version: "0.1.0",
+        apiContractVersion: BOSS_WATCH_API_CONTRACT_VERSION,
+        buildIdentity: BOSS_WATCH_BUILD_IDENTITY,
+        startedAt,
       });
       return;
     }
@@ -215,18 +221,24 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
 
     if (
       url.pathname === "/api/v1/browser/status" ||
+      url.pathname === "/api/v1/browser/jobs/search/status" ||
       url.pathname === "/api/v1/browser/jobs/discover" ||
       url.pathname === "/api/v1/browser/jobs/search" ||
       url.pathname === "/api/v1/browser/captures/job" ||
       url.pathname === "/api/v1/browser/captures/conversation" ||
       url.pathname === "/api/v1/browser/jobs/capture" ||
       url.pathname === "/api/v1/browser/jobs/poll" ||
-      url.pathname === "/api/v1/browser/forms/inspect"
+      url.pathname === "/api/v1/browser/forms/inspect" ||
+      url.pathname === "/api/v1/browser/forms/fill"
     ) {
       if (!authenticateService(request, options.serviceToken)) throw new ApiError(401, "unauthorized");
       if (browserController === undefined) throw new ApiError(503, "browser_controller_unavailable");
       if (request.method === "GET" && url.pathname === "/api/v1/browser/status") {
         writeJson(response, 200, await browserController.status());
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/browser/jobs/search/status") {
+        writeJson(response, 200, browserController.searchGuardStatus());
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/v1/browser/jobs/discover") {
@@ -249,7 +261,19 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
         } catch {
           throw new ApiError(400, "invalid_request");
         }
-        writeJson(response, 200, await browserController.searchJobs(input));
+        const abortController = new AbortController();
+        const abortDisconnectedSearch = () => {
+          if (!response.writableEnded) abortController.abort();
+        };
+        request.once("aborted", abortDisconnectedSearch);
+        response.once("close", abortDisconnectedSearch);
+        try {
+          const result = await browserController.searchJobs(input, abortController.signal);
+          if (!abortController.signal.aborted && !response.destroyed) writeJson(response, 200, result);
+        } finally {
+          request.off("aborted", abortDisconnectedSearch);
+          response.off("close", abortDisconnectedSearch);
+        }
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/v1/browser/captures/job") {
@@ -322,6 +346,42 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
         writeJson(response, 200, await browserController.inspectApplicationForm(body.expectedUrl.trim()));
         return;
       }
+      if (request.method === "POST" && url.pathname === "/api/v1/browser/forms/fill") {
+        const body = await readJsonBody(request);
+        if (
+          !isRecord(body) ||
+          typeof body.expectedUrl !== "string" ||
+          body.expectedUrl.trim().length === 0 ||
+          body.expectedUrl.length > 4096 ||
+          typeof body.expectedFormHash !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(body.expectedFormHash) ||
+          !Array.isArray(body.fields) ||
+          body.fields.length === 0 ||
+          body.fields.length > 50 ||
+          !body.fields.every(
+            (field) =>
+              isRecord(field) &&
+              typeof field.fieldId === "string" &&
+              /^form-field:[a-f0-9]{64}$/u.test(field.fieldId) &&
+              typeof field.value === "string" &&
+              field.value.trim().length > 0 &&
+              field.value.length <= 2_000 &&
+              !field.value.includes("\u0000"),
+          )
+        ) {
+          throw new ApiError(400, "invalid_request");
+        }
+        writeJson(
+          response,
+          200,
+          await browserController.fillApplicationForm({
+            expectedUrl: body.expectedUrl.trim(),
+            expectedFormHash: body.expectedFormHash,
+            fields: body.fields.map((field) => ({ fieldId: field.fieldId, value: field.value })),
+          }),
+        );
+        return;
+      }
       throw new ApiError(404, "route_not_found");
     }
 
@@ -329,7 +389,10 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
       url.pathname === "/api/v1/interview-notes/preview" ||
       url.pathname === "/api/v1/interview-notes/apply" ||
       url.pathname === "/api/v1/progress-signals/preview" ||
-      url.pathname === "/api/v1/progress-signals/apply"
+      url.pathname === "/api/v1/progress-signals/apply" ||
+      url.pathname === "/api/v1/application-status/preview" ||
+      url.pathname === "/api/v1/application-status/apply" ||
+      url.pathname === "/api/v1/official-jds/capture"
     ) {
       if (!authenticateService(request, options.serviceToken)) throw new ApiError(401, "unauthorized");
       if (request.method === "POST" && url.pathname === "/api/v1/interview-notes/preview") {
@@ -358,6 +421,32 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
           kind: "progress_signal",
           applicationId: result.applicationId,
           eventId: result.signalEventId,
+          deduplicated: result.deduplicated,
+        });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/application-status/preview") {
+        writeJson(response, 200, captureApi.previewApplicationStatus(await readJsonBody(request)));
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/application-status/apply") {
+        const result = await captureApi.applyApplicationStatus(await readJsonBody(request));
+        writeJson(response, result.deduplicated ? 200 : 201, result);
+        emitEvent("capture", {
+          kind: "application_status",
+          applicationId: result.applicationId,
+          eventId: result.eventId,
+          deduplicated: result.deduplicated,
+        });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/official-jds/capture") {
+        const result = await captureApi.captureOfficialJob(await readJsonBody(request));
+        writeJson(response, result.deduplicated ? 200 : 201, result);
+        emitEvent("capture", {
+          kind: "official_job_description",
+          applicationId: result.applicationId,
+          eventId: result.eventId,
           deduplicated: result.deduplicated,
         });
         return;

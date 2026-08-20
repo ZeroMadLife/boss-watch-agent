@@ -35,3 +35,26 @@ test('rejects unsupported cities before touching the browser', () => {
   const service = new LocalBossJobSearchService({ browser })
   assert.throws(() => service.preview({ keyword: 'Agent', city: '火星' }), /unsupported_boss_search_city/)
 })
+
+test('passes guarded search results through without retrying the browser', async () => {
+  let calls = 0
+  const browser = {
+    async searchJobs() {
+      calls += 1
+      return {
+        status: 'guarded' as const,
+        reason: 'search_cooldown' as const,
+        retryAfterMs: 30_000,
+        targetCount: 0 as const,
+        plan: { keyword: 'Agent', city: '上海', maxPages: 1, maxJobs: 5 },
+        pagesVisited: 0 as const,
+        items: [] as const,
+      }
+    },
+  } as unknown as BossWatchBrowserController
+  const service = new LocalBossJobSearchService({ browser })
+  const preview = service.preview({ keyword: 'Agent', city: '上海' })
+  const result = await service.run(preview.previewToken, true)
+  assert.equal(result.status, 'guarded')
+  assert.equal(calls, 1)
+})

@@ -98,8 +98,28 @@ export class HttpBossHunterBrowserRuntime implements BossHunterBrowserRuntime {
     if (!response.ok) throw new Error("browser_close_failed");
   }
 
-  async #getJson(path: string): Promise<unknown> {
-    const response = await fetch(`${this.#baseUrl}${path}`, { signal: AbortSignal.timeout(5_000) });
+  async waitForLoad(targetId: string, timeoutMs = 15_000, signal?: AbortSignal): Promise<void> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (true) {
+      if (signal?.aborted) return;
+      try {
+        const value = await this.#getJson(`/info?target=${encodeURIComponent(targetId)}`, signal);
+        if (isRecord(value) && value.ready === "complete") return;
+      } catch {
+        if (signal?.aborted) return;
+        // A target can briefly be unavailable while Chrome creates the page.
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
+    }
+  }
+
+  async #getJson(path: string, signal?: AbortSignal): Promise<unknown> {
+    const timeout = AbortSignal.timeout(5_000);
+    const response = await fetch(`${this.#baseUrl}${path}`, {
+      signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+    });
     if (!response.ok) throw new Error("browser_runtime_request_failed");
     return response.json();
   }

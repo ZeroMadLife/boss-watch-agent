@@ -43,6 +43,45 @@ test('calls the local Browser Controller with the service token and preserves ha
   }
 })
 
+test('reads the process-local BOSS search guard without starting a search', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-watch-controller-guard-'))
+  const tokenPath = join(directory, 'dsh-service-token')
+  const token = 'service-token-guard-fixture-1234567890'
+  await writeFile(tokenPath, token, 'utf8')
+  const requests: string[] = []
+  const server = createServer((request, response) => {
+    requests.push(request.url ?? '')
+    response.writeHead(200, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({
+      state: 'search_cooldown',
+      guarded: true,
+      retryAfterMs: 12_000,
+      observedAt: '2026-08-19T03:00:00.000Z',
+      scope: 'controller_process',
+      resetsOnRestart: true,
+    }))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('missing_server_address')
+
+  try {
+    const client = new LocalBossWatchBrowserController(`http://127.0.0.1:${address.port}`, tokenPath)
+    assert.deepEqual(await client.searchGuardStatus(), {
+      state: 'search_cooldown',
+      guarded: true,
+      retryAfterMs: 12_000,
+      observedAt: '2026-08-19T03:00:00.000Z',
+      scope: 'controller_process',
+      resetsOnRestart: true,
+    })
+    assert.deepEqual(requests, ['/api/v1/browser/jobs/search/status'])
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)))
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('uses the bounded discovery and discovered-capture endpoints', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'boss-watch-controller-discovery-'))
   const tokenPath = join(directory, 'dsh-service-token')

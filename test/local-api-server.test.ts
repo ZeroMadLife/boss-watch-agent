@@ -45,6 +45,7 @@ describe("Boss Watch local API", () => {
       databasePath: await databasePath(),
       pairingCode: "123456",
       runtimeMode: "baseline_ready",
+      now: () => new Date("2026-08-19T09:00:00.000Z"),
     });
 
     try {
@@ -58,6 +59,9 @@ describe("Boss Watch local API", () => {
         database: "ready",
         runtimeMode: "baseline_ready",
         version: "0.1.0",
+        apiContractVersion: "2026-08-19.closed-loop-v1",
+        buildIdentity: "boss-watch-agent@0.1.0+api-2026-08-19.closed-loop-v1",
+        startedAt: "2026-08-19T09:00:00.000Z",
       });
     } finally {
       await server.close();

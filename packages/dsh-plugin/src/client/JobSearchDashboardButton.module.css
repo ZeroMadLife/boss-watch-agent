@@ -1,0 +1,32 @@
+.headerButton {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.headerButton:hover,
+.headerButton:focus-visible {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
+}
+
+@media (max-width: 430px) {
+  .headerButton {
+    flex-basis: 36px;
+    width: 36px;
+    height: 36px;
+  }
+}

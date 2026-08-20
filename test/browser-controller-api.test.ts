@@ -117,6 +117,46 @@ function formBrowserRuntime(): BossHunterBrowserRuntime {
   };
 }
 
+function fillableFormBrowserRuntime(): BossHunterBrowserRuntime {
+  const formUrl = "https://careers.example.invalid/jobs/agent/apply?token=redacted";
+  return {
+    async health() {
+      return { status: "ok", runtime: "bosshunter", connected: true };
+    },
+    async targets() {
+      return [{ targetId: "target-fillable-form-api-1", type: "page", title: "虚构申请表", url: formUrl }];
+    },
+    async evaluate(_targetId, expression) {
+      if (expression.includes("const requested =")) {
+        return { status: "filled", sourceUrl: formUrl, ordinals: [0] };
+      }
+      return {
+        status: "ready",
+        sourceUrl: formUrl,
+        title: "虚构申请表",
+        fields: [
+          {
+            ordinal: 0,
+            controlType: "text",
+            inputType: "text",
+            label: "姓名",
+            name: "candidate_name",
+            autocomplete: "name",
+            required: true,
+            disabled: false,
+            readOnly: false,
+            currentState: "empty",
+          },
+        ],
+      };
+    },
+    async newTab() {
+      return "unused";
+    },
+    async close() {},
+  };
+}
+
 describe("Browser Controller local API", () => {
   it("accepts the local DSH service identity and rejects web or unauthenticated callers", async () => {
     const server = createLocalApiServer({
@@ -137,6 +177,10 @@ describe("Browser Controller local API", () => {
       const authorized = await fetch(`${address.origin}/api/v1/browser/status`, {
         headers: { authorization: `Bearer ${serviceToken}` },
       });
+      const unauthorizedGuard = await fetch(`${address.origin}/api/v1/browser/jobs/search/status`);
+      const authorizedGuard = await fetch(`${address.origin}/api/v1/browser/jobs/search/status`, {
+        headers: { authorization: `Bearer ${serviceToken}` },
+      });
 
       expect(unauthorized.status).toBe(401);
       expect(webOrigin.status).toBe(403);
@@ -145,6 +189,15 @@ describe("Browser Controller local API", () => {
         status: "ready",
         targetCount: 1,
         target: { pageKind: "job_detail", title: "虚构岗位", url: jobUrl },
+      });
+      expect(unauthorizedGuard.status).toBe(401);
+      expect(authorizedGuard.status).toBe(200);
+      expect(await authorizedGuard.json()).toEqual({
+        state: "ready",
+        guarded: false,
+        observedAt: "2026-08-17T03:00:00.000Z",
+        scope: "controller_process",
+        resetsOnRestart: true,
       });
     } finally {
       await server.close();
@@ -355,6 +408,62 @@ describe("Browser Controller local API", () => {
         fields: [{ label: "上传简历", currentState: "empty" }],
       });
       expect(JSON.stringify(body)).not.toContain("token=redacted");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("fills an exact form plan through the service-only endpoint without returning values", async () => {
+    const server = createLocalApiServer({
+      databasePath: await databasePath(),
+      pairingCode: "123456",
+      runtimeMode: "baseline_ready",
+      browserRuntime: fillableFormBrowserRuntime(),
+      serviceToken,
+      now: () => new Date("2026-08-18T05:00:00.000Z"),
+    });
+
+    try {
+      const address = await server.start({ port: 0 });
+      const headers = { authorization: `Bearer ${serviceToken}`, "content-type": "application/json" };
+      const inspected = await fetch(`${address.origin}/api/v1/browser/forms/inspect`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ expectedUrl: "https://careers.example.invalid/jobs/agent" }),
+      });
+      const inspection = (await inspected.json()) as {
+        page: { formHash: string };
+        fields: Array<{ fieldId: string }>;
+      };
+      const unauthorized = await fetch(`${address.origin}/api/v1/browser/forms/fill`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedUrl: "https://careers.example.invalid/jobs/agent",
+          expectedFormHash: inspection.page.formHash,
+          fields: [{ fieldId: inspection.fields[0]?.fieldId, value: "候选人甲" }],
+        }),
+      });
+      const filled = await fetch(`${address.origin}/api/v1/browser/forms/fill`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          expectedUrl: "https://careers.example.invalid/jobs/agent",
+          expectedFormHash: inspection.page.formHash,
+          fields: [{ fieldId: inspection.fields[0]?.fieldId, value: "候选人甲" }],
+        }),
+      });
+
+      expect(unauthorized.status).toBe(401);
+      expect(filled.status).toBe(200);
+      const body = await filled.json();
+      expect(body).toMatchObject({
+        status: "filled",
+        filledCount: 1,
+        requiresHumanReview: true,
+        submitted: false,
+      });
+      expect(JSON.stringify(body)).not.toContain("候选人甲");
     } finally {
       await server.close();
     }

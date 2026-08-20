@@ -204,9 +204,14 @@ function toApplicationOverview(job: JobSummary, timeline: TimelineEvent[]): Appl
   const recruiterMessageCount = timeline.filter((event) => event.type === 'recruiter_message_captured').length
   const interviewNoteCount = timeline.filter((event) => event.type === 'interview_note_recorded').length
   const progressSignalCount = timeline.filter((event) => event.type === 'progress_signal_recorded').length
-  const latestProposal = [...timeline].reverse().find((event) => event.type === 'status_change_proposed')
-  const progressState: ProgressState = latestProposal !== undefined
+  const latestProposal = [...timeline].reverse().find(isStatusProposal)
+  const latestConfirmed = [...timeline].reverse().find(isManualStatusConfirmation)
+  const activeProposal = latestProposal !== undefined
+    && (latestConfirmed === undefined || latestProposal.sequence > latestConfirmed.sequence)
+  const progressState: ProgressState = activeProposal
     ? 'status_proposed'
+    : latestConfirmed !== undefined
+      ? 'status_confirmed'
     : progressSignalCount > 0
       ? 'signal_needs_review'
       : interviewNoteCount > 0
@@ -224,15 +229,61 @@ function toApplicationOverview(job: JobSummary, timeline: TimelineEvent[]): Appl
     progressSignalCount,
     latestEventType: latestEvent?.type ?? 'job_description_captured',
     latestEventAt: latestEvent?.occurredAt ?? job.capturedAt,
-    ...statusProposal(latestProposal),
+    ...activeProposal ? statusValue(latestProposal, 'proposedStatus') : {},
+    ...statusValue(latestConfirmed, 'confirmedStatus'),
+    ...latestConfirmed === undefined ? {} : { confirmedAt: latestConfirmed.occurredAt },
   }
 }
 
-function statusProposal(event: TimelineEvent | undefined): { proposedStatus?: string } {
+const MANUALLY_CONFIRMABLE_STATUSES = new Set([
+  'submitted',
+  'assessment_scheduled',
+  'assessment_completed',
+  'interview_scheduled',
+  'rejected',
+  'offer',
+  'closed',
+])
+
+const APPLICATION_STATUSES = new Set([
+  'discovered',
+  'scored',
+  'gate_a_approved',
+  'material_prepared',
+  'awaiting_gate_b',
+  'submitted',
+  'assessment_scheduled',
+  'assessment_completed',
+  'recruiter_replied',
+  'interview_scheduled',
+  'rejected',
+  'offer',
+  'no_response',
+  'closed',
+])
+
+function isStatusProposal(event: TimelineEvent): boolean {
+  return event.type === 'status_change_proposed'
+    && isRecord(event.payload)
+    && typeof event.payload.to === 'string'
+    && APPLICATION_STATUSES.has(event.payload.to)
+}
+
+function isManualStatusConfirmation(event: TimelineEvent): boolean {
+  if (event.type !== 'status_change_confirmed' || event.actor !== 'human' || !isRecord(event.payload)) return false
+  return event.payload.source === 'user_manual_confirmation'
+    && typeof event.payload.to === 'string'
+    && MANUALLY_CONFIRMABLE_STATUSES.has(event.payload.to)
+}
+
+function statusValue<Key extends 'proposedStatus' | 'confirmedStatus'>(
+  event: TimelineEvent | undefined,
+  key: Key,
+): Partial<Record<Key, string>> {
   if (event === undefined || !isRecord(event.payload)) return {}
-  const proposedStatus = event.payload.to
-  return typeof proposedStatus === 'string' && proposedStatus.trim().length > 0
-    ? { proposedStatus }
+  const status = event.payload.to
+  return typeof status === 'string' && APPLICATION_STATUSES.has(status)
+    ? { [key]: status } as Partial<Record<Key, string>>
     : {}
 }
 

@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { LocalBossWatchBrowserController } from './browser-controller-client.js'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-host-webserver'
 import { SqliteBatchApplicationStore } from './application-batch.js'
 import { SqliteFollowUpStore } from './application-follow-up.js'
 import { GankInterviewCampusAdapter, SqliteJobLeadStore } from './job-lead.js'
@@ -19,13 +20,20 @@ import { LocalApplicationFormPreviewService } from './application-form-preview.j
 import { LocalResumeImportService, SqliteResumeVersionStore } from './resume-version.js'
 import { LocalInterviewNoteClient } from './interview-note-client.js'
 import { LocalProgressSignalClient } from './progress-signal-client.js'
-import { LocalResumeMatchingService } from './resume-matching.js'
+import { LocalResumeMatchingService, SqliteResumeMatchStore } from './resume-matching.js'
 import { registerBossWatchTools } from './tools.js'
 import { SqliteBossWatchDataSource } from './sqlite-source.js'
 import { registerBossWatchSkill } from './skill.js'
 import { LocalWorkspaceOverviewService } from './workspace-overview.js'
 import { LocalCandidateBoardService } from './candidate-board.js'
 import { LocalBossJobSearchService } from './boss-job-search.js'
+import { LocalRecruitmentSourceService, SqliteRecruitmentSourceStore } from './recruitment-source.js'
+import { LocalOfficialJobCaptureClient } from './official-job-client.js'
+import { LocalRecruitmentJdService } from './recruitment-jd.js'
+import { LocalGateAService, SqliteGateAStore } from './gate-a.js'
+import { LocalApplicationStatusClient } from './application-status-client.js'
+import { registerBossWatchDashboardRoute } from './dashboard-route.js'
+import { registerBossWatchDashboardPageRoute } from './dashboard-page-route.js'
 
 export const name = 'boss-watch-dsh-plugin'
 export const inject = ['tools', 'skills']
@@ -49,12 +57,29 @@ export function apply(ctx: Context): void {
   const browser = new LocalBossWatchBrowserController()
   const interviewNoteClient = new LocalInterviewNoteClient()
   const progressSignalClient = new LocalProgressSignalClient()
+  const applicationStatusClient = new LocalApplicationStatusClient()
   const leadStore = databaseReady ? new SqliteJobLeadStore(databasePath) : undefined
+  const recruitmentSourceStore = databaseReady ? new SqliteRecruitmentSourceStore(databasePath) : undefined
+  const recruitmentSource = recruitmentSourceStore === undefined
+    ? undefined
+    : new LocalRecruitmentSourceService({ store: recruitmentSourceStore })
+  const recruitmentJd = recruitmentSourceStore === undefined || leadStore === undefined
+    ? undefined
+    : new LocalRecruitmentJdService({
+        sources: recruitmentSourceStore,
+        leads: leadStore,
+        capture: new LocalOfficialJobCaptureClient(),
+      })
   const batchStore = databaseReady ? new SqliteBatchApplicationStore(databasePath) : undefined
   const followUpStore = databaseReady ? new SqliteFollowUpStore(databasePath) : undefined
   const feishuStore = databaseReady ? new SqliteFeishuTargetStore(databasePath) : undefined
   const jobWatchStore = databaseReady ? new SqliteJobWatchStore(databasePath) : undefined
   const resumeStore = databaseReady ? new SqliteResumeVersionStore(databasePath) : undefined
+  const resumeMatchStore = databaseReady ? new SqliteResumeMatchStore(databasePath) : undefined
+  const gateAStore = databaseReady ? new SqliteGateAStore(databasePath) : undefined
+  const gateA = resumeMatchStore === undefined || gateAStore === undefined
+    ? undefined
+    : new LocalGateAService({ matches: resumeMatchStore, approvals: gateAStore })
   const jobWatch = jobWatchStore === undefined
     ? undefined
     : new LocalJobWatchService({ source, browser, store: jobWatchStore })
@@ -62,9 +87,14 @@ export function apply(ctx: Context): void {
     ? undefined
     : new LocalJobWatchScheduler({ service: jobWatch })
   const jobDiff = new LocalJobDescriptionDiffService(source)
-  const applicationPreview = leadStore === undefined || resumeStore === undefined
+  const applicationPreview = leadStore === undefined || resumeStore === undefined || gateAStore === undefined || recruitmentSourceStore === undefined
     ? undefined
-    : new LocalApplicationPreviewService({ leads: leadStore, resumes: resumeStore })
+    : new LocalApplicationPreviewService({
+        leads: leadStore,
+        resumes: resumeStore,
+        approvals: gateAStore,
+        recruitmentSources: recruitmentSourceStore,
+      })
   const resumeImport = resumeStore === undefined
     ? undefined
     : new LocalResumeImportService({
@@ -74,12 +104,18 @@ export function apply(ctx: Context): void {
       })
   const resumeMatching = resumeImport === undefined
     ? undefined
-    : new LocalResumeMatchingService({ source, resumes: resumeImport })
-  const applicationFormPreview = leadStore === undefined || resumeStore === undefined || resumeImport === undefined
+    : new LocalResumeMatchingService({ source, resumes: resumeImport, ...resumeMatchStore === undefined ? {} : { store: resumeMatchStore } })
+  const applicationFormPreview = leadStore === undefined
+    || resumeStore === undefined
+    || resumeImport === undefined
+    || gateAStore === undefined
+    || recruitmentSourceStore === undefined
     ? undefined
     : new LocalApplicationFormPreviewService({
         leads: leadStore,
         resumes: resumeStore,
+        approvals: gateAStore,
+        recruitmentSources: recruitmentSourceStore,
         resumeImport,
         browser,
       })
@@ -129,6 +165,8 @@ export function apply(ctx: Context): void {
     databaseReady,
     ...leadStore === undefined ? {} : { leads: leadStore },
     ...resumeStore === undefined ? {} : { resumes: resumeStore },
+    ...resumeMatchStore === undefined ? {} : { resumeMatches: resumeMatchStore },
+    ...gateAStore === undefined ? {} : { gateAApprovals: gateAStore },
     ...feishuStore === undefined ? {} : { feishuTargets: feishuStore },
     sourceAvailability: {
       gankInterview: gankToken !== undefined && gankToken.length > 0,
@@ -137,14 +175,40 @@ export function apply(ctx: Context): void {
       clipboardImport: clipboardImportService !== undefined,
       visualImport: visualImportService !== undefined,
     },
+    searchGuard: browser,
   })
   const candidateBoard = leadStore === undefined
     ? undefined
-    : new LocalCandidateBoardService({ source, leads: leadStore })
+    : new LocalCandidateBoardService({
+        source,
+        leads: leadStore,
+        ...resumeStore === undefined ? {} : { resumes: resumeStore },
+        ...resumeMatchStore === undefined ? {} : { matches: resumeMatchStore },
+        ...gateAStore === undefined ? {} : { gateAApprovals: gateAStore },
+        ...recruitmentSourceStore === undefined ? {} : { recruitmentSources: recruitmentSourceStore },
+        ...feishuStore === undefined ? {} : { projections: feishuStore },
+        ...followUpStore === undefined ? {} : { followUps: followUpStore },
+      })
   const bossJobSearch = new LocalBossJobSearchService({ browser })
+  ctx.inject(['webServer'], (webContext) => {
+    webContext.effect(
+      () => {
+        const disposePage = registerBossWatchDashboardPageRoute(webContext.webServer)
+        const disposeApi = registerBossWatchDashboardRoute(webContext.webServer, {
+          workspaceOverview,
+          ...candidateBoard === undefined ? {} : { candidateBoard },
+        })
+        return () => {
+          disposeApi()
+          disposePage()
+        }
+      },
+      'boss-watch-dsh-plugin.dashboard-route()',
+    )
+  })
   ctx.effect(
     () => {
-      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch)
+      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch, recruitmentSource, recruitmentSourceStore, resumeMatchStore, recruitmentJd, gateA, applicationStatusClient)
       const disposeSkill = registerBossWatchSkill(ctx)
       return () => {
         disposeSkill()
@@ -152,9 +216,12 @@ export function apply(ctx: Context): void {
         followUpStore?.close()
         batchStore?.close()
         leadStore?.close()
+        recruitmentSourceStore?.close()
         feishuStore?.close()
         jobWatchStore?.close()
         resumeStore?.close()
+        resumeMatchStore?.close()
+        gateAStore?.close()
       }
     },
     'boss-watch-dsh-plugin.lifecycle()',
@@ -179,9 +246,18 @@ export { LocalResumeImportService, SqliteResumeVersionStore } from './resume-ver
 export { LocalInterviewNoteClient } from './interview-note-client.js'
 export { LocalProgressSignalClient } from './progress-signal-client.js'
 export { LocalResumeMatchingService } from './resume-matching.js'
+export { SqliteResumeMatchStore } from './resume-matching.js'
 export { LocalWorkspaceOverviewService } from './workspace-overview.js'
 export { LocalCandidateBoardService } from './candidate-board.js'
 export { LocalBossJobSearchService } from './boss-job-search.js'
+export { LocalRecruitmentSourceService, SqliteRecruitmentSourceStore } from './recruitment-source.js'
+export { LocalOfficialJobCaptureClient } from './official-job-client.js'
+export { LocalRecruitmentJdService } from './recruitment-jd.js'
+export { LocalGateAService, SqliteGateAStore } from './gate-a.js'
+export { LocalApplicationStatusClient } from './application-status-client.js'
+export { registerBossWatchDashboardRoute } from './dashboard-route.js'
+export { registerBossWatchDashboardPageRoute } from './dashboard-page-route.js'
+export type * from './dashboard-contract.js'
 export { evaluateResumeMatchGold } from './resume-match-eval.js'
 export { BOSS_WATCH_SKILL } from './skill.js'
 export type * from './domain.js'
@@ -199,6 +275,10 @@ export type * from './resume-matching.js'
 export type * from './progress-signal-client.js'
 export type * from './resume-match-eval.js'
 export type * from './workspace-overview.js'
+export type * from './recruitment-source.js'
+export type * from './recruitment-jd.js'
+export type * from './gate-a.js'
+export type * from './application-status-client.js'
 
 async function hashVisionAttachment(reference: string, attachments: AttachmentReader): Promise<string> {
   const parsed = decodeVisionAttachmentReference(reference)

@@ -7,6 +7,8 @@ export type ApplicationStatus =
   | "material_prepared"
   | "awaiting_gate_b"
   | "submitted"
+  | "assessment_scheduled"
+  | "assessment_completed"
   | "recruiter_replied"
   | "interview_scheduled"
   | "rejected"
@@ -84,6 +86,13 @@ export type ApplicationEvent = ApplicationEventBase &
           from?: ApplicationStatus;
           to: ApplicationStatus;
           evidenceEventIds: string[];
+        };
+      }
+    | {
+        type: "status_change_confirmed";
+        payload: {
+          to: ApplicationStatus;
+          source: "user_manual_confirmation";
         };
       }
   );

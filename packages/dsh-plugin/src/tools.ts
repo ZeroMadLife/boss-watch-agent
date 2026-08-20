@@ -36,10 +36,20 @@ import type {
   ProgressSignalPreviewInput,
   ProgressSignalSourceKind,
 } from './progress-signal-client.js'
-import type { LocalResumeMatchingService } from './resume-matching.js'
+import type { LocalResumeMatchingService, ResumeMatchStore } from './resume-matching.js'
 import type { LocalWorkspaceOverviewService } from './workspace-overview.js'
 import type { LocalCandidateBoardService } from './candidate-board.js'
 import type { LocalBossJobSearchService } from './boss-job-search.js'
+import type {
+  RecruitmentSourceService,
+  RecruitmentSourceStore,
+} from './recruitment-source.js'
+import type { RecruitmentJdService } from './recruitment-jd.js'
+import type { LocalGateAService } from './gate-a.js'
+import type {
+  LocalApplicationStatusClient,
+  ManuallyConfirmableApplicationStatus,
+} from './application-status-client.js'
 
 const unsafeDefineTool = dshDefineTool as unknown as (
   options: DefineToolOptions<ParameterSchemaSpec, ValueSchemaSpec>,
@@ -107,7 +117,7 @@ const APPLICATION_OVERVIEW = {
     progressState: {
       type: 'string',
       required: true,
-      enum: ['new', 'conversation_active', 'interview_notes', 'signal_needs_review', 'status_proposed'],
+      enum: ['new', 'conversation_active', 'interview_notes', 'signal_needs_review', 'status_proposed', 'status_confirmed'],
     },
     eventCount: { type: 'integer', required: true },
     recruiterMessageCount: { type: 'integer', required: true },
@@ -116,6 +126,8 @@ const APPLICATION_OVERVIEW = {
     latestEventType: { type: 'string', required: true },
     latestEventAt: { type: 'string', required: true },
     proposedStatus: { type: 'string' },
+    confirmedStatus: { type: 'string' },
+    confirmedAt: { type: 'string' },
   },
 } as const
 
@@ -160,6 +172,7 @@ const FOLLOW_UP_ITEM = {
     latestEventType: { type: 'string' },
     latestEventAt: { type: 'string' },
     proposedStatus: { type: 'string' },
+    confirmedStatus: { type: 'string' },
   },
 } as const
 
@@ -176,6 +189,12 @@ const LEAD_CONFIRMATION_STATUS = {
 } as const
 
 const LEAD_IMPORT_STATUS = {
+  type: 'string',
+  required: true,
+  enum: ['ok', 'source_unavailable', 'not_found', 'invalid_request', 'conflict'],
+} as const
+
+const RECRUITMENT_SOURCE_STATUS = {
   type: 'string',
   required: true,
   enum: ['ok', 'source_unavailable', 'not_found', 'invalid_request', 'conflict'],
@@ -257,24 +276,145 @@ const LEAD = {
   },
 } as const
 
+const RECRUITMENT_SOURCE = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    sourceId: { type: 'string', required: true },
+    company: { type: 'string', required: true },
+    channelUrl: { type: 'string', required: true },
+    referralCode: { type: 'string' },
+    sourceType: { type: 'string', required: true, enum: ['official_referral', 'company_career', 'campus_announcement', 'unknown'] },
+    rawArtifactHash: { type: 'string', required: true },
+    capturedAt: { type: 'string', required: true },
+    status: { type: 'string', required: true, enum: ['source_only', 'role_selected', 'jd_ready'] },
+    boundLeadId: { type: 'string' },
+    boundApplicationId: { type: 'string' },
+    role: { type: 'string' },
+    officialJobUrl: { type: 'string' },
+    jdContentHash: { type: 'string' },
+  },
+} as const
+
+const RECRUITMENT_JD_PREVIEW = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    previewToken: { type: 'string', required: true },
+    expiresAt: { type: 'string', required: true },
+    sourceId: { type: 'string', required: true },
+    sourceArtifactHash: { type: 'string', required: true },
+    company: { type: 'string', required: true },
+    role: { type: 'string', required: true },
+    officialJobUrl: { type: 'string', required: true },
+    jdContentHash: { type: 'string', required: true },
+    jdLength: { type: 'integer', required: true },
+    city: { type: 'string' },
+    cohort: { type: 'string' },
+    recruitmentType: { type: 'string' },
+    deadline: { type: 'string' },
+    warnings: { type: 'array', items: { type: 'string' }, required: true },
+    requiresConfirmation: { type: 'boolean', required: true },
+  },
+} as const
+
 const CANDIDATE_BOARD_ITEM = {
   type: 'object',
   additionalProperties: false,
   properties: {
     candidateId: { type: 'string', required: true },
-    recordKind: { type: 'string', required: true, enum: ['source_lead', 'captured_job'] },
+    recordKind: { type: 'string', required: true, enum: ['recruitment_source', 'source_lead', 'captured_job'] },
     sourceKind: { type: 'string', required: true },
     company: { type: 'string', required: true },
     role: { type: 'string', required: true },
     city: { type: 'string' },
     cohort: { type: 'string' },
     recruitmentType: { type: 'string' },
+    leadId: { type: 'string' },
+    recruitmentSourceId: { type: 'string' },
+    referralCode: { type: 'string' },
     channelUrl: { type: 'string' },
     jobUrl: { type: 'string' },
+    officialApplyUrl: { type: 'string' },
+    deadline: { type: 'string' },
+    sourceUpdatedAt: { type: 'string' },
     capturedAt: { type: 'string', required: true },
     confidence: { type: 'string', required: true },
-    jdStatus: { type: 'string', required: true, enum: ['source_summary', 'complete'] },
-    nextAction: { type: 'string', required: true, enum: ['verify_official_jd', 'match_resume', 'prepare_application'] },
+    jdStatus: { type: 'string', required: true, enum: ['source_summary', 'verified_summary', 'complete'] },
+    resumeReady: { type: 'boolean', required: true },
+    progressState: { type: 'string' },
+    latestEventType: { type: 'string' },
+    latestEventAt: { type: 'string' },
+    proposedStatus: { type: 'string' },
+    confirmedStatus: { type: 'string' },
+    confirmedAt: { type: 'string' },
+    timeline: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          eventType: { type: 'string', required: true, enum: ['job_description_captured', 'recruiter_message_captured', 'interview_note_recorded', 'progress_signal_recorded', 'status_change_proposed', 'status_change_confirmed'] },
+          occurredAt: { type: 'string', required: true },
+          evidenceKind: { type: 'string', required: true, enum: ['fact', 'proposal', 'confirmed'] },
+          status: { type: 'string' },
+        },
+      },
+    },
+    timelineTruncated: { type: 'boolean' },
+    latestMatch: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        matchId: { type: 'string', required: true },
+        score: { type: 'integer', required: true },
+        matchLevel: { type: 'string', required: true, enum: ['strong', 'moderate', 'weak', 'insufficient_evidence'] },
+        strategyVersion: { type: 'string', required: true },
+        createdAt: { type: 'string', required: true },
+        resumeVersionId: { type: 'string', required: true },
+        matchedSkills: { type: 'array', items: { type: 'string' }, required: true },
+        missingSkills: { type: 'array', items: { type: 'string' }, required: true },
+        matchedCapabilities: { type: 'array', items: { type: 'string' }, required: true },
+        missingCapabilities: { type: 'array', items: { type: 'string' }, required: true },
+      },
+    },
+    gateA: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        gateAId: { type: 'string', required: true },
+        matchId: { type: 'string', required: true },
+        approvedAt: { type: 'string', required: true },
+        decision: { type: 'string', required: true, enum: ['proceed'] },
+        externalAction: { type: 'string', required: true, enum: ['not_authorized'] },
+      },
+    },
+    feishuProjections: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          targetId: { type: 'string', required: true },
+          projectedAt: { type: 'string', required: true },
+          lastResult: { type: 'string', required: true, enum: ['created', 'updated', 'unchanged'] },
+        },
+      },
+    },
+    followUps: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          followUpId: { type: 'string', required: true },
+          dueAt: { type: 'string', required: true },
+          reason: { type: 'string', required: true, enum: ['application_status', 'no_response', 'interview', 'manual'] },
+        },
+      },
+    },
+    nextAction: { type: 'string', required: true, enum: ['verify_official_jd', 'import_resume', 'match_resume', 'review_match', 'confirm_gate_a', 'prepare_application', 'sync_feishu', 'review_application_progress'] },
+    nextTool: { type: 'string', required: true },
   },
 } as const
 
@@ -448,7 +588,7 @@ const BROWSER_DISCOVERY_STATUS = {
 const BROWSER_SEARCH_STATUS = {
   type: 'string',
   required: true,
-  enum: ['ok', 'partial', 'cancelled', 'invalid_request', 'source_unavailable', 'no_supported_tab', 'target_ambiguous', 'human_required', 'environment_interrupted'],
+  enum: ['ok', 'partial', 'cancelled', 'guarded', 'invalid_request', 'source_unavailable', 'no_supported_tab', 'target_ambiguous', 'human_required', 'environment_interrupted'],
 } as const
 
 const BROWSER_DISCOVERY_TARGET = {
@@ -554,6 +694,18 @@ const RESUME_MATCH_STATUS = {
   enum: ['ok', 'source_unavailable', 'not_found', 'invalid_request', 'conflict'],
 } as const
 
+const GATE_A_STATUS = {
+  type: 'string',
+  required: true,
+  enum: ['ok', 'source_unavailable', 'not_found', 'invalid_request', 'conflict'],
+} as const
+
+const APPLICATION_STATUS_RECORD_STATUS = {
+  type: 'string',
+  required: true,
+  enum: ['ok', 'source_unavailable', 'not_found', 'invalid_request', 'conflict'],
+} as const
+
 const APPLICATION_FORM_PREVIEW_STATUS = {
   type: 'string',
   required: true,
@@ -589,14 +741,247 @@ export function registerBossWatchTools(
   workspaceOverview?: LocalWorkspaceOverviewService,
   candidateBoard?: LocalCandidateBoardService,
   bossJobSearch?: LocalBossJobSearchService,
+  recruitmentSource?: RecruitmentSourceService,
+  recruitmentSourceStore?: RecruitmentSourceStore,
+  resumeMatchStore?: ResumeMatchStore,
+  recruitmentJd?: RecruitmentJdService,
+  gateA?: LocalGateAService,
+  applicationStatus?: LocalApplicationStatusClient,
 ): () => void {
   const disposers = [
     ctx.tools.register(
       defineTool({
-        name: 'boss_watch_candidate_board',
-        description: 'Read a unified local candidate board from Gank/Tencent source leads and captured BOSS JDs. Read-only; keeps source facts separate, does not refresh sources or write Feishu.',
+        name: 'boss_watch_recruitment_source_preview',
+        description: 'Preview a user-pasted company recruitment link and referral code. Local parsing only; does not open the link, create a JobLead, match a resume, or write Feishu.',
         parameters: {
-          limit: { type: 'integer', description: 'Maximum candidates to return, from 1 to 50.' },
+          rawText: { type: 'string', required: true, description: 'Untrusted pasted source text containing a company and HTTPS recruitment link.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: RECRUITMENT_SOURCE_STATUS,
+              preview: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  previewToken: { type: 'string', required: true },
+                  expiresAt: { type: 'string', required: true },
+                  source: RECRUITMENT_SOURCE,
+                  warnings: { type: 'array', items: { type: 'string' }, required: true },
+                  roleRequired: { type: 'boolean', required: true },
+                  jdRequired: { type: 'boolean', required: true },
+                },
+              },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (recruitmentSource === undefined) return { status: 'source_unavailable' as const, message: 'recruitment_source_unavailable' }
+          try {
+            const preview = await recruitmentSource.preview({ rawText: args.rawText })
+            return { status: 'ok' as const, preview: { ...preview, warnings: [...preview.warnings] } }
+          } catch (error: unknown) {
+            return recruitmentSourceError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_recruitment_jd_preview',
+        description: 'Preview binding one confirmed recruitment source to an exact role and complete official JD. Local-only: validates and hashes evidence but does not write, browse, match a resume, or submit an application.',
+        parameters: {
+          sourceId: { type: 'string', required: true },
+          role: { type: 'string', required: true },
+          officialJobUrl: { type: 'string', required: true, description: 'Exact public HTTPS job or application URL selected by the user.' },
+          jdText: { type: 'string', required: true, description: 'Complete visible JD text supplied by the user. It is hashed in preview and never returned.' },
+          city: { type: 'string' },
+          cohort: { type: 'string' },
+          recruitmentType: { type: 'string' },
+          deadline: { type: 'string' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: RECRUITMENT_SOURCE_STATUS,
+              preview: RECRUITMENT_JD_PREVIEW,
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (recruitmentJd === undefined) return { status: 'source_unavailable' as const, message: 'recruitment_jd_service_unavailable' }
+          try {
+            const preview = await recruitmentJd.preview({
+              sourceId: args.sourceId,
+              role: args.role,
+              officialJobUrl: args.officialJobUrl,
+              jdText: args.jdText,
+              ...stringField(args.city, 'city'),
+              ...stringField(args.cohort, 'cohort'),
+              ...stringField(args.recruitmentType, 'recruitmentType'),
+              ...stringField(args.deadline, 'deadline'),
+            })
+            return { status: 'ok' as const, preview: { ...preview, warnings: [...preview.warnings] } }
+          } catch (error: unknown) {
+            return recruitmentJdError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_recruitment_jd_apply',
+        description: 'After explicit confirmation, persist the previewed official JD, create a verified company-career JobLead, and bind both identifiers back to the recruitment source. Does not browse, match, fill, or submit.',
+        parameters: {
+          previewToken: { type: 'string', required: true },
+          confirmation: { type: 'string', required: true, description: 'Explicit confirmation of source, company, role, exact URL, JD hash and optional metadata shown in preview.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: RECRUITMENT_SOURCE_STATUS,
+              source: RECRUITMENT_SOURCE,
+              lead: LEAD,
+              applicationId: { type: 'string' },
+              eventId: { type: 'string' },
+              artifactId: { type: 'string' },
+              artifactRef: { type: 'string' },
+              contentHash: { type: 'string' },
+              savedAt: { type: 'string' },
+              deduplicated: { type: 'boolean' },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (recruitmentJd === undefined) return { status: 'source_unavailable' as const, message: 'recruitment_jd_service_unavailable' }
+          if (typeof args.confirmation !== 'string' || args.confirmation.trim().length === 0) {
+            return { status: 'invalid_request' as const, message: 'recruitment_jd_confirmation_required' }
+          }
+          try {
+            return { status: 'ok' as const, ...await recruitmentJd.apply(args.previewToken) }
+          } catch (error: unknown) {
+            return recruitmentJdError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_recruitment_source_apply',
+        description: 'Apply exactly one previously previewed recruitment source after explicit confirmation. Writes only the local source inbox; it does not invent a role/JD or visit the official site.',
+        parameters: {
+          previewToken: { type: 'string', required: true, description: 'Short-lived token returned by boss_watch_recruitment_source_preview.' },
+          confirmation: { type: 'string', required: true, description: 'Explicit confirmation of the displayed company, HTTPS link, referral code and hash.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: RECRUITMENT_SOURCE_STATUS,
+              source: RECRUITMENT_SOURCE,
+              reused: { type: 'boolean' },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (recruitmentSource === undefined) return { status: 'source_unavailable' as const, message: 'recruitment_source_unavailable' }
+          if (typeof args.confirmation !== 'string' || args.confirmation.trim().length === 0) {
+            return { status: 'invalid_request' as const, message: 'recruitment_source_confirmation_required' }
+          }
+          try {
+            const result = await recruitmentSource.apply(args.previewToken)
+            return { status: 'ok' as const, source: result.source, reused: result.reused }
+          } catch (error: unknown) {
+            return recruitmentSourceError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_recruitment_source_list',
+        description: 'List locally confirmed recruitment sources. Read-only; does not contact external sites or infer roles/JDs.',
+        parameters: {
+          limit: { type: 'integer', description: 'Maximum sources to return, from 1 to 100.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: RECRUITMENT_SOURCE_STATUS,
+              sources: { type: 'array', items: RECRUITMENT_SOURCE, required: true },
+              count: { type: 'integer', required: true },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (recruitmentSourceStore === undefined) return { status: 'source_unavailable' as const, sources: [], count: 0, message: 'recruitment_source_store_unavailable' }
+          try {
+            const limit = typeof args.limit === 'number' ? args.limit : undefined
+            const sources = recruitmentSourceStore.list(limit === undefined ? {} : { limit })
+            return { status: 'ok' as const, sources, count: sources.length }
+          } catch (error: unknown) {
+            return { ...recruitmentSourceError(error), sources: [], count: 0 }
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_recruitment_source_get',
+        description: 'Read one confirmed recruitment source by id. Read-only; role and JD remain absent until explicitly bound later.',
+        parameters: {
+          sourceId: { type: 'string', required: true },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: RECRUITMENT_SOURCE_STATUS,
+              source: RECRUITMENT_SOURCE,
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (recruitmentSourceStore === undefined) return { status: 'source_unavailable' as const, message: 'recruitment_source_store_unavailable' }
+          try {
+            const source = recruitmentSourceStore.get(args.sourceId)
+            return source === undefined
+              ? { status: 'not_found' as const, message: 'recruitment_source_not_found' }
+              : { status: 'ok' as const, source }
+          } catch (error: unknown) {
+            return recruitmentSourceError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_candidate_board',
+        description: 'Read a unified local candidate board from source leads and captured BOSS JDs, including JD evidence level, resume readiness, the latest privacy-bounded match summary, confirmed application progress, Feishu projection state, and the next local tool. A sync_feishu action only recommends a preview; this tool is read-only and does not refresh sources, open pages, apply, or write Feishu.',
+        parameters: {
+          limit: { type: 'integer', description: 'Maximum candidates to return, from 1 to 100.' },
         },
         output: {
           schema: {
@@ -625,7 +1010,7 @@ export function registerBossWatchTools(
     ctx.tools.register(
       defineTool({
         name: 'boss_watch_workspace_overview',
-        description: 'Read the local job-search workspace readiness, source options, closed-loop checkpoints, and recommended next tools. Local read-only; never refreshes a source, opens a page, or writes Feishu.',
+        description: 'Read local job-search readiness, source options, checkpoints, BOSS search guard state, and recommended next tools. Local read-only; the guard check reads Controller memory only and never refreshes a source, opens a page, applies, or writes Feishu.',
         parameters: {},
         output: {
           schema: {
@@ -743,6 +1128,7 @@ export function registerBossWatchTools(
               targetCount: { type: 'integer' },
               plan: { type: 'json' },
               pagesVisited: { type: 'integer' },
+              retryAfterMs: { type: 'integer' },
               items: { type: 'array', items: BROWSER_SEARCH_ITEM },
               message: { type: 'string' },
             },
@@ -1735,10 +2121,10 @@ export function registerBossWatchTools(
     ctx.tools.register(
       defineTool({
         name: 'boss_watch_apply_preview',
-        description: 'Preview an official application page for one verified local lead and an existing local resume version. Read-only and local: never opens the page, reads the resume, fills fields, sends, or submits.',
+        description: 'Preview an official application page only after one exact Gate A confirmation and verified source binding. Read-only and local: never opens the page, reads the resume, fills fields, sends, or submits.',
         parameters: {
           leadId: { type: 'string', required: true, description: 'Local JobLead id returned by boss_watch_lead_get.' },
-          resumeVersionId: { type: 'string', required: true, description: 'Existing local resume version id returned by boss_watch_resume_list or resume import apply.' },
+          gateAId: { type: 'string', required: true, description: 'Exact Gate A id returned by boss_watch_gate_a_confirm for the bound application and resume snapshot.' },
         },
         output: {
           schema: {
@@ -1755,7 +2141,7 @@ export function registerBossWatchTools(
         async execute(args) {
           if (applicationPreview === undefined) return { status: 'source_unavailable' as const, message: 'application_preview_unavailable' }
           try {
-            return { status: 'ok' as const, preview: applicationPreview.preview({ leadId: args.leadId, resumeVersionId: args.resumeVersionId }) as unknown as JsonValue }
+            return { status: 'ok' as const, preview: applicationPreview.preview({ leadId: args.leadId, gateAId: args.gateAId }) as unknown as JsonValue }
           } catch (error: unknown) {
             return applicationPreviewError(error)
           }
@@ -1765,7 +2151,7 @@ export function registerBossWatchTools(
     ctx.tools.register(
       defineTool({
         name: 'boss_watch_resume_match',
-        description: 'Match one registered local resume against one locally captured BOSS JD. The plugin extracts and analyzes the resume locally, then returns only hashes, constraints, skill labels, score, gaps and risks; it never returns resume text or calls a model.',
+        description: 'Match one registered local resume against one locally captured complete JD with local-evidence-match-v3. Returns only hashes, normalized technology/capability labels, eligibility and location-preference constraints, a privacy-bounded resume summary, score, gaps and risks; never returns raw resume/JD text or calls an external model.',
         parameters: {
           applicationId: { type: 'string', required: true, description: 'Application id whose full JD was already captured locally.' },
           resumeVersionId: { type: 'string', required: true, description: 'Existing local resume version id returned by boss_watch_resume_list or resume import apply.' },
@@ -1800,11 +2186,78 @@ export function registerBossWatchTools(
     ),
     ctx.tools.register(
       defineTool({
+        name: 'boss_watch_resume_match_list',
+        description: 'List persisted local resume match results, optionally for one application. Read-only; returns privacy-bounded summaries, evidence labels and hashes, never resume or JD raw text.',
+        parameters: {
+          applicationId: { type: 'string', description: 'Optional local application id.' },
+          limit: { type: 'integer', description: 'Maximum results to return, from 1 to 100.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: RESUME_MATCH_STATUS,
+              matches: { type: 'array', items: { type: 'json' }, required: true },
+              count: { type: 'integer', required: true },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (resumeMatchStore === undefined) return { status: 'source_unavailable' as const, matches: [], count: 0, message: 'resume_match_store_unavailable' }
+          try {
+            const matches = resumeMatchStore.list({
+              ...typeof args.applicationId === 'string' ? { applicationId: args.applicationId.trim() } : {},
+              ...typeof args.limit === 'number' ? { limit: args.limit } : {},
+            })
+            return { status: 'ok' as const, matches: matches as unknown as JsonValue[], count: matches.length }
+          } catch (error: unknown) {
+            return { ...resumeMatchError(error), matches: [], count: 0 }
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_gate_a_confirm',
+        description: 'Persist the user\'s explicit Gate A decision to proceed with materials for one exact local match snapshot. Local-only: does not open a page, fill or submit a form, send a message, or write Feishu.',
+        parameters: {
+          matchId: { type: 'string', required: true, description: 'Exact match id returned by boss_watch_resume_match or boss_watch_resume_match_list.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: GATE_A_STATUS,
+              approval: { type: 'json' },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (gateA === undefined) return { status: 'source_unavailable' as const, message: 'gate_a_unavailable' }
+          try {
+            return {
+              status: 'ok' as const,
+              approval: gateA.confirm({ matchId: args.matchId }) as unknown as JsonValue,
+            }
+          } catch (error: unknown) {
+            return gateAError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
         name: 'boss_watch_application_form_preview',
-        description: 'Inspect the already-opened official/ATS form for one verified lead and classify visible fields against a registered local resume. Read-only: never navigates, returns contact values, writes DOM, uploads a resume, or submits.',
+        description: 'Inspect an already-opened official/ATS form and build a privacy-bounded prefill plan fixed to one exact Gate A resume snapshot. Values stay in local process memory; this call never writes DOM, uploads, or submits.',
         parameters: {
           leadId: { type: 'string', required: true, description: 'Verified local JobLead id whose stored officialApplyUrl identifies the allowed page origin.' },
-          resumeVersionId: { type: 'string', required: true, description: 'Existing local resume version id. Text stays inside the plugin process.' },
+          gateAId: { type: 'string', required: true, description: 'Exact Gate A id that fixes the application, JD and resume version.' },
         },
         output: {
           schema: {
@@ -1819,14 +2272,19 @@ export function registerBossWatchTools(
           },
           render: renderJson,
         },
-        async execute(args) {
+        async execute(args, exec) {
           if (applicationFormPreview === undefined) {
             return { status: 'source_unavailable' as const, message: 'application_form_preview_unavailable' }
+          }
+          const sessionId = exec.agent?.id === undefined ? undefined : String(exec.agent.id)
+          if (sessionId === undefined || sessionId.length === 0) {
+            return { status: 'invalid_request' as const, message: 'application_form_session_required' }
           }
           try {
             const outcome = await applicationFormPreview.preview({
               leadId: args.leadId,
-              resumeVersionId: args.resumeVersionId,
+              gateAId: args.gateAId,
+              sessionId,
             })
             return outcome.status === 'ready'
               ? { status: 'ok' as const, preview: outcome.preview as unknown as JsonValue }
@@ -2559,6 +3017,81 @@ export function registerBossWatchTools(
     ),
     ctx.tools.register(
       defineTool({
+        name: 'boss_watch_application_status_preview',
+        description: 'Preview one status that the user says they personally observed for an existing local application. Local read-only preview; does not log in, query an ATS, send, submit, or write Feishu.',
+        parameters: {
+          applicationId: { type: 'string', required: true, description: 'Exact existing local application id.' },
+          status: {
+            type: 'string',
+            required: true,
+            enum: ['submitted', 'assessment_scheduled', 'assessment_completed', 'interview_scheduled', 'rejected', 'offer', 'closed'],
+          },
+          occurredAt: { type: 'string', description: 'Optional ISO timestamp for when the user observed the status.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: APPLICATION_STATUS_RECORD_STATUS,
+              preview: { type: 'json' },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (applicationStatus === undefined) return { status: 'source_unavailable' as const, message: 'application_status_client_unavailable' }
+          try {
+            return {
+              status: 'ok' as const,
+              preview: await applicationStatus.preview({
+                applicationId: args.applicationId,
+                status: args.status as ManuallyConfirmableApplicationStatus,
+                ...typeof args.occurredAt === 'string' ? { occurredAt: args.occurredAt } : {},
+              }) as unknown as JsonValue,
+            }
+          } catch (error: unknown) {
+            return applicationStatusError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: 'boss_watch_application_status_apply',
+        description: 'Append exactly one user-confirmed local application status from a short-lived preview. Does not perform the external action or write Feishu.',
+        parameters: {
+          previewToken: { type: 'string', required: true, description: 'Short-lived token returned by boss_watch_application_status_preview.' },
+          confirmed: { type: 'boolean', required: true, description: 'Must be true only after the user confirms the exact application, status and time.' },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              status: APPLICATION_STATUS_RECORD_STATUS,
+              result: { type: 'json' },
+              message: { type: 'string' },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (applicationStatus === undefined) return { status: 'source_unavailable' as const, message: 'application_status_client_unavailable' }
+          try {
+            return {
+              status: 'ok' as const,
+              result: await applicationStatus.apply(args.previewToken, args.confirmed) as unknown as JsonValue,
+            }
+          } catch (error: unknown) {
+            return applicationStatusError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
         name: 'boss_watch_interview_note_preview',
         description: 'Preview a manually entered interview note for one existing application. Does not write SQLite until the matching apply call is confirmed.',
         parameters: {
@@ -2715,6 +3248,66 @@ function leadImportError(error: unknown): { status: 'invalid_request' | 'not_fou
   }
 }
 
+function recruitmentSourceError(error: unknown): {
+  status: 'invalid_request' | 'not_found' | 'conflict' | 'source_unavailable'
+  message: string
+} {
+  const message = error instanceof Error ? error.message : 'recruitment_source_failed'
+  const notFound = new Set(['recruitment_source_preview_not_found'])
+  const conflict = new Set(['recruitment_source_preview_stale'])
+  const invalid = new Set([
+    'source_text_required',
+    'source_text_too_large',
+    'source_company_required',
+    'https_channel_url_required',
+    'recruitment_source_confirmation_required',
+  ])
+  return {
+    status: notFound.has(message)
+      ? 'not_found'
+      : conflict.has(message)
+        ? 'conflict'
+        : invalid.has(message)
+          ? 'invalid_request'
+          : 'source_unavailable',
+    message,
+  }
+}
+
+function recruitmentJdError(error: unknown): {
+  status: 'invalid_request' | 'not_found' | 'conflict' | 'source_unavailable'
+  message: string
+} {
+  const message = error instanceof Error ? error.message : 'recruitment_jd_failed'
+  const notFound = new Set(['recruitment_jd_preview_not_found', 'recruitment_source_not_found'])
+  const conflict = new Set([
+    'recruitment_jd_preview_stale',
+    'recruitment_jd_apply_in_progress',
+    'lead_content_changed',
+  ])
+  const invalid = new Set([
+    'recruitment_source_id_required',
+    'official_job_role_required',
+    'official_job_url_invalid',
+    'official_job_jd_required',
+    'invalid_city',
+    'invalid_cohort',
+    'invalid_recruitmentType',
+    'invalid_deadline',
+    'recruitment_jd_confirmation_required',
+  ])
+  return {
+    status: notFound.has(message)
+      ? 'not_found'
+      : conflict.has(message)
+        ? 'conflict'
+        : invalid.has(message)
+          ? 'invalid_request'
+          : 'source_unavailable',
+    message,
+  }
+}
+
 function visualLeadImportError(error: unknown): { status: 'invalid_request' | 'not_found' | 'conflict' | 'source_unavailable'; message: string } {
   const message = error instanceof Error ? error.message : 'visual_lead_import_failed'
   const notFound = new Set(['visual_preview_not_found'])
@@ -2798,9 +3391,9 @@ function jobDiffError(error: unknown): { status: 'invalid_request' | 'not_found'
 
 function applicationPreviewError(error: unknown): { status: 'invalid_request' | 'not_found' | 'conflict' | 'source_unavailable'; message: string } {
   const message = error instanceof Error ? error.message : 'application_preview_failed'
-  if (message === 'apply_lead_not_found' || message === 'apply_resume_not_found') return { status: 'not_found', message }
-  if (message === 'apply_lead_not_verified') return { status: 'conflict', message }
-  if (new Set(['apply_official_url_missing', 'apply_official_url_invalid', 'invalid_resume_version_id', 'invalid_lead_id']).has(message)) {
+  if (message === 'apply_lead_not_found' || message === 'apply_resume_not_found' || message === 'apply_gate_a_not_found') return { status: 'not_found', message }
+  if (new Set(['apply_lead_not_verified', 'apply_gate_a_binding_missing', 'apply_resume_snapshot_stale']).has(message)) return { status: 'conflict', message }
+  if (new Set(['apply_official_url_missing', 'apply_official_url_invalid', 'invalid_gate_a_id', 'invalid_lead_id']).has(message)) {
     return { status: 'invalid_request', message }
   }
   return { status: 'source_unavailable', message }
@@ -2810,20 +3403,32 @@ function applicationFormPreviewError(error: unknown): { status: 'invalid_request
   const message = error instanceof Error ? error.message : 'application_form_preview_failed'
   const notFound = new Set([
     'application_form_lead_not_found',
+    'application_form_gate_a_not_found',
     'application_form_resume_not_found',
+    'application_form_preview_not_found',
     'resume_version_not_found',
     'resume_artifact_not_found',
   ])
   const conflict = new Set([
     'application_form_lead_not_verified',
+    'application_form_gate_a_binding_missing',
+    'application_form_resume_snapshot_stale',
     'application_form_resume_identity_mismatch',
+    'application_form_preview_session_mismatch',
+    'application_form_preview_expired',
+    'application_form_preview_consumed',
+    'application_form_preview_binding_changed',
+    'application_form_no_fillable_fields',
     'resume_artifact_hash_mismatch',
     'resume_artifact_path_invalid',
     'resume_text_empty',
   ])
   const invalid = new Set([
     'invalid_lead_id',
-    'invalid_resume_version_id',
+    'invalid_gate_a_id',
+    'invalid_session_id',
+    'invalid_preview_token',
+    'application_form_session_required',
     'application_form_official_url_missing',
     'application_form_official_url_invalid',
   ])
@@ -2832,6 +3437,7 @@ function applicationFormPreviewError(error: unknown): { status: 'invalid_request
     'resume_text_extraction_unavailable',
     'resume_text_extraction_failed',
     'unsupported_resume_text_type',
+    'application_form_fill_unavailable',
     'sqlite_resume_store_closed',
   ])
   if (notFound.has(message)) return { status: 'not_found', message }
@@ -2879,6 +3485,28 @@ function resumeMatchError(error: unknown): { status: 'invalid_request' | 'not_fo
   if (conflict.has(message)) return { status: 'conflict', message }
   if (invalid.has(message)) return { status: 'invalid_request', message }
   return { status: 'source_unavailable', message }
+}
+
+function gateAError(error: unknown): { status: 'invalid_request' | 'not_found' | 'source_unavailable'; message: string } {
+  const message = error instanceof Error ? error.message : 'gate_a_failed'
+  if (message === 'gate_a_match_not_found') return { status: 'not_found', message }
+  if (message === 'invalid_match_id') return { status: 'invalid_request', message }
+  return { status: 'source_unavailable', message: message === 'database_closed' ? message : 'gate_a_failed' }
+}
+
+function applicationStatusError(error: unknown): { status: 'invalid_request' | 'not_found' | 'conflict' | 'source_unavailable'; message: string } {
+  const message = error instanceof Error ? error.message : 'application_status_failed'
+  if (message === 'application_not_found' || message === 'application_status_preview_not_found') return { status: 'not_found', message }
+  if (message === 'confirmation_required') return { status: 'conflict', message }
+  if (new Set(['invalid_application_status', 'invalid_application_status_timestamp', 'invalid_application_status_apply', 'invalid_capture_timestamp']).has(message)) {
+    return { status: 'invalid_request', message }
+  }
+  return {
+    status: 'source_unavailable',
+    message: message === 'controller_unavailable' || message === 'controller_restart_required'
+      ? message
+      : 'application_status_failed',
+  }
 }
 
 function normalizeStringArray(value: unknown): string[] | undefined {

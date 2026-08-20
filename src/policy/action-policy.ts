@@ -7,6 +7,7 @@ export type BossAction =
   | "draft_reply"
   | "propose_status_change"
   | "sync_feishu"
+  | "prefill_application"
   | "send_message"
   | "send_resume"
   | "schedule_follow_up"
@@ -29,6 +30,7 @@ const observationActions = new Set<BossAction>([
 
 const approvalActions = new Set<BossAction>([
   "sync_feishu",
+  "prefill_application",
   "send_message",
   "send_resume",
   "schedule_follow_up",

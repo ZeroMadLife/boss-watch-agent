@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto'
 import type { JobLead, JobLeadStore } from './job-lead.js'
 import type { ResumeVersion, ResumeVersionStore } from './resume-version.js'
+import type { GateAApproval, GateAStore } from './gate-a.js'
+import type { RecruitmentSourceStore } from './recruitment-source.js'
 
 export interface ApplicationPreview {
   readonly previewId: string
   readonly createdAt: string
   readonly expiresAt: string
-  readonly strategyVersion: 'apply-preview-v1'
+  readonly strategyVersion: 'apply-preview-v2'
+  readonly gateA: Pick<GateAApproval, 'gateAId' | 'matchId' | 'applicationId' | 'approvedAt' | 'decision' | 'externalAction'>
   readonly lead: Pick<JobLead, 'leadId' | 'company' | 'role' | 'cohort' | 'recruitmentType' | 'contentHash' | 'confidence'> & {
     readonly officialApplyUrl: string
   }
@@ -32,34 +35,51 @@ export interface ApplicationPreview {
 export class LocalApplicationPreviewService {
   readonly #leads: Pick<JobLeadStore, 'get'>
   readonly #resumes: Pick<ResumeVersionStore, 'get'>
+  readonly #approvals: Pick<GateAStore, 'get'>
+  readonly #recruitmentSources: Pick<RecruitmentSourceStore, 'list'>
   readonly #now: () => Date
 
   constructor(input: {
     leads: Pick<JobLeadStore, 'get'>
     resumes: Pick<ResumeVersionStore, 'get'>
+    approvals: Pick<GateAStore, 'get'>
+    recruitmentSources: Pick<RecruitmentSourceStore, 'list'>
     now?: () => Date
   }) {
     this.#leads = input.leads
     this.#resumes = input.resumes
+    this.#approvals = input.approvals
+    this.#recruitmentSources = input.recruitmentSources
     this.#now = input.now ?? (() => new Date())
   }
 
-  preview(input: { leadId: string; resumeVersionId: string }): ApplicationPreview {
+  preview(input: { leadId: string; gateAId: string }): ApplicationPreview {
     const leadId = requireText(input.leadId, 'lead_id')
+    const gateAId = requireText(input.gateAId, 'gate_a_id')
+    const gateA = this.#approvals.get(gateAId)
+    if (gateA === undefined) throw new Error('apply_gate_a_not_found')
     const lead = this.#leads.get(leadId)
     if (lead === undefined) throw new Error('apply_lead_not_found')
     if (lead.confidence !== 'human_confirmed' && lead.confidence !== 'jd_verified') {
       throw new Error('apply_lead_not_verified')
     }
     if (lead.officialApplyUrl === undefined) throw new Error('apply_official_url_missing')
+    const exactBinding = this.#recruitmentSources.list({ limit: 100 }).some((source) => (
+      source.status === 'jd_ready'
+      && source.boundLeadId === lead.leadId
+      && source.boundApplicationId === gateA.applicationId
+      && source.jdContentHash === gateA.jdContentHash
+    ))
+    if (!exactBinding) throw new Error('apply_gate_a_binding_missing')
     const url = parseOfficialApplyUrl(lead.officialApplyUrl)
-    const resume = this.#resumes.get(input.resumeVersionId)
+    const resume = this.#resumes.get(gateA.resumeVersionId)
     if (resume === undefined) throw new Error('apply_resume_not_found')
+    if (resume.contentHash !== gateA.resumeContentHash) throw new Error('apply_resume_snapshot_stale')
     const now = this.#now()
     const createdAt = now.toISOString()
     const expiresAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString()
     const previewId = `apply-preview:${createHash('sha256')
-      .update(`${lead.leadId}\n${lead.contentHash}\n${resume.resumeVersionId}\n${resume.contentHash}`)
+      .update(`${gateA.gateAId}\n${lead.leadId}\n${lead.contentHash}\n${resume.resumeVersionId}\n${resume.contentHash}`)
       .digest('hex')}`
     const knownFields = [
       field('company', lead.company),
@@ -71,7 +91,15 @@ export class LocalApplicationPreviewService {
       previewId,
       createdAt,
       expiresAt,
-      strategyVersion: 'apply-preview-v1',
+      strategyVersion: 'apply-preview-v2',
+      gateA: {
+        gateAId: gateA.gateAId,
+        matchId: gateA.matchId,
+        applicationId: gateA.applicationId,
+        approvedAt: gateA.approvedAt,
+        decision: gateA.decision,
+        externalAction: gateA.externalAction,
+      },
       lead: {
         leadId: lead.leadId,
         company: lead.company,

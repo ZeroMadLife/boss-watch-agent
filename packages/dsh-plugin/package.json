@@ -25,7 +25,8 @@
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-primitives"
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-layout"
       ],
       "platform": "web"
     },
@@ -57,8 +58,10 @@
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-runtime": "*",
     "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-client-ui-layout": "*",
     "@deepseek-ai/dsh-client-ui-primitives": "*",
     "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-host-webserver": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-skill": "*",
     "@deepseek-ai/dsh-tools": "*"
@@ -75,8 +78,10 @@
     "@deepseek-ai/dsh-client-locale": "link:../../../deepseek-harness/packages/client/locale",
     "@deepseek-ai/dsh-client-runtime": "link:../../../deepseek-harness/packages/client/runtime",
     "@deepseek-ai/dsh-client-ui-conversation": "link:../../../deepseek-harness/packages/client/ui-conversation",
+    "@deepseek-ai/dsh-client-ui-layout": "link:../../../deepseek-harness/packages/client/ui-layout",
     "@deepseek-ai/dsh-client-ui-primitives": "link:../../../deepseek-harness/packages/client/ui-primitives",
     "@deepseek-ai/dsh-client-ui-slots": "link:../../../deepseek-harness/packages/client/ui-slots",
+    "@deepseek-ai/dsh-host-webserver": "link:../../../deepseek-harness/packages/host/webserver",
     "@deepseek-ai/dsh-llm": "link:../../../deepseek-harness/packages/llm/llm",
     "@deepseek-ai/dsh-skill": "link:../../../deepseek-harness/packages/skill/skill",
     "@deepseek-ai/dsh-system-prompt": "link:../../../deepseek-harness/packages/core/system-prompt",

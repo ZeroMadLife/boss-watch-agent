@@ -2,8 +2,12 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-primitives'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { ResumeImportButton } from './ResumeImportButton.tsx'
 import { ProgressSignalImportButton } from './ProgressSignalImportButton.tsx'
+import { JobSearchDashboardButton } from './JobSearchDashboardButton.tsx'
+import { JobSearchDashboardOverlay } from './JobSearchDashboardOverlay.tsx'
 import { en, NS, zh, type ResumeKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -29,9 +33,23 @@ export function apply(ctx: ClientContext): void {
     order: -9,
     locale: NS,
   }, ProgressSignalImportButton))
+  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+    name: 'conversation.session.header.utilities',
+    id: 'boss-watch-job-search-dashboard',
+    order: -20,
+    locale: NS,
+  }, JobSearchDashboardButton))
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'boss-watch-job-search-dashboard-overlay',
+    order: 20,
+    locale: NS,
+  }, JobSearchDashboardOverlay))
 }
 
 export { ResumeUploadClient } from './resume-upload-client.ts'
 export type * from './resume-upload-client.ts'
 export { ProgressSignalUploadClient } from './progress-signal-upload-client.ts'
 export type * from './progress-signal-upload-client.ts'
+export { BossWatchDashboardClient, buildCandidateActionDraft } from './dashboard-client.ts'
+export type * from './dashboard-client.ts'

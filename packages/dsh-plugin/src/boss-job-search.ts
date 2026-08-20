@@ -42,6 +42,7 @@ export class LocalBossJobSearchService {
       constraints: [
         '最多 2 页、最多 5 个岗位',
         '按岗位 externalJobId 去重，详情页串行打开',
+        '同一搜索任务互斥；导航间隔、运行冷却和风险冷却由本地 Controller 执行',
         '登录、验证码、风控或浏览器断连立即交还人工',
         '不会发送消息、投递简历或写入飞书',
       ],

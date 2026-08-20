@@ -1,7 +1,9 @@
-import type { BossWatchDataSource } from './domain.js'
+import type { BossWatchDataSource, BrowserSearchGuardStatus } from './domain.js'
 import type { FeishuTargetStore } from './feishu-projection.js'
 import type { JobLeadStore } from './job-lead.js'
 import type { ResumeVersionStore } from './resume-version.js'
+import type { ResumeMatchStore } from './resume-matching.js'
+import type { GateAStore } from './gate-a.js'
 
 export type WorkspacePhase =
   | 'local_runtime_setup'
@@ -19,6 +21,10 @@ export interface WorkspaceSourceAvailability {
   readonly visualImport: boolean
 }
 
+export interface SearchGuardStatusProvider {
+  searchGuardStatus(): Promise<BrowserSearchGuardStatus>
+}
+
 export interface WorkspaceSourceChannel {
   readonly sourceId: 'gankinterview' | 'boss_visible' | 'file_import' | 'clipboard_import' | 'visual_import'
   readonly state: 'ready' | 'setup_required'
@@ -27,7 +33,7 @@ export interface WorkspaceSourceChannel {
 }
 
 export interface WorkspaceCheckpoint {
-  readonly checkpointId: 'local_runtime' | 'resume' | 'job_leads' | 'official_jd' | 'captured_jd' | 'feishu_projection'
+  readonly checkpointId: 'local_runtime' | 'resume' | 'job_leads' | 'official_jd' | 'captured_jd' | 'resume_match' | 'gate_a' | 'feishu_projection'
   readonly state: 'ready' | 'needs_action' | 'optional'
   readonly count: number
 }
@@ -46,12 +52,15 @@ export interface WorkspaceOverview {
   readonly databaseReady: boolean
   readonly readOnly: true
   readonly externalNetworkAccess: false
+  readonly bossSearchGuard: BrowserSearchGuardStatus | WorkspaceUnavailableSearchGuard
   readonly counts: {
     readonly resumeVersions: number
     readonly jobLeads: number
     readonly sourceOnlyLeads: number
     readonly verifiedLeads: number
     readonly capturedJobs: number
+    readonly resumeMatches: number
+    readonly gateAApprovals: number
     readonly feishuTargets: number
   }
   readonly sourceChannels: readonly WorkspaceSourceChannel[]
@@ -64,9 +73,26 @@ interface WorkspaceOverviewOptions {
   readonly databaseReady: boolean
   readonly leads?: Pick<JobLeadStore, 'summarize'>
   readonly resumes?: Pick<ResumeVersionStore, 'count'>
+  readonly resumeMatches?: Pick<ResumeMatchStore, 'count'>
+  readonly gateAApprovals?: Pick<GateAStore, 'count'>
   readonly feishuTargets?: Pick<FeishuTargetStore, 'countTargets'>
   readonly sourceAvailability: WorkspaceSourceAvailability
+  readonly searchGuard?: SearchGuardStatusProvider
 }
+
+export type WorkspaceUnavailableSearchGuard =
+  | {
+      readonly state: 'controller_unavailable'
+      readonly guarded: true
+      readonly scope: 'controller_process'
+      readonly resetsOnRestart: true
+    }
+  | {
+      readonly state: 'not_checked'
+      readonly guarded: false
+      readonly scope: 'controller_process'
+      readonly resetsOnRestart: true
+    }
 
 const EMPTY_COUNTS: WorkspaceOverview['counts'] = {
   resumeVersions: 0,
@@ -74,6 +100,8 @@ const EMPTY_COUNTS: WorkspaceOverview['counts'] = {
   sourceOnlyLeads: 0,
   verifiedLeads: 0,
   capturedJobs: 0,
+  resumeMatches: 0,
+  gateAApprovals: 0,
   feishuTargets: 0,
 }
 
@@ -86,15 +114,30 @@ export class LocalWorkspaceOverviewService {
 
   async inspect(): Promise<WorkspaceOverview> {
     const counts = this.#options.databaseReady ? await this.#readCounts() : EMPTY_COUNTS
+    const bossSearchGuard = this.#options.databaseReady
+      ? await this.#readSearchGuard()
+      : { state: 'not_checked' as const, guarded: false as const, scope: 'controller_process' as const, resetsOnRestart: true as const }
     return {
       phase: selectPhase(this.#options.databaseReady, counts),
       databaseReady: this.#options.databaseReady,
       readOnly: true,
       externalNetworkAccess: false,
+      bossSearchGuard,
       counts,
       sourceChannels: sourceChannels(this.#options.sourceAvailability),
       checkpoints: checkpoints(this.#options.databaseReady, counts),
       recommendedActions: recommendedActions(this.#options.databaseReady, counts, this.#options.sourceAvailability),
+    }
+  }
+
+  async #readSearchGuard(): Promise<WorkspaceOverview['bossSearchGuard']> {
+    if (this.#options.searchGuard === undefined) {
+      return { state: 'not_checked', guarded: false, scope: 'controller_process', resetsOnRestart: true }
+    }
+    try {
+      return await this.#options.searchGuard.searchGuardStatus()
+    } catch {
+      return { state: 'controller_unavailable', guarded: true, scope: 'controller_process', resetsOnRestart: true }
     }
   }
 
@@ -109,6 +152,8 @@ export class LocalWorkspaceOverviewService {
       sourceOnlyLeads: leadSummary.sourceOnly,
       verifiedLeads: leadSummary.verified,
       capturedJobs,
+      resumeMatches: this.#options.resumeMatches?.count() ?? 0,
+      gateAApprovals: this.#options.gateAApprovals?.count() ?? 0,
       feishuTargets: this.#options.feishuTargets?.countTargets() ?? 0,
     }
   }
@@ -117,7 +162,7 @@ export class LocalWorkspaceOverviewService {
 function selectPhase(databaseReady: boolean, counts: WorkspaceOverview['counts']): WorkspacePhase {
   if (!databaseReady) return 'local_runtime_setup'
   if (counts.resumeVersions === 0) return 'resume_setup'
-  if (counts.verifiedLeads > 0) return 'application_preparation'
+  if (counts.gateAApprovals > 0) return 'application_preparation'
   if (counts.capturedJobs > 0) return 'match_ready'
   if (counts.jobLeads > 0) return 'lead_verification'
   return 'lead_discovery'
@@ -169,6 +214,8 @@ function checkpoints(databaseReady: boolean, counts: WorkspaceOverview['counts']
     },
     { checkpointId: 'official_jd', state: counts.verifiedLeads > 0 ? 'ready' : 'needs_action', count: counts.verifiedLeads },
     { checkpointId: 'captured_jd', state: counts.capturedJobs > 0 ? 'ready' : 'optional', count: counts.capturedJobs },
+    { checkpointId: 'resume_match', state: counts.resumeMatches > 0 ? 'ready' : 'needs_action', count: counts.resumeMatches },
+    { checkpointId: 'gate_a', state: counts.gateAApprovals > 0 ? 'ready' : 'needs_action', count: counts.gateAApprovals },
     { checkpointId: 'feishu_projection', state: counts.feishuTargets > 0 ? 'ready' : 'optional', count: counts.feishuTargets },
   ]
 }
@@ -214,11 +261,14 @@ function recommendedActions(
   if (counts.sourceOnlyLeads > 0 && counts.verifiedLeads === 0) {
     actions.push(action(1, 'review_job_leads', 'official_jd_verification_required', 'boss_watch_lead_list'))
   }
-  if (counts.capturedJobs > 0 && counts.resumeVersions > 0) {
+  if (counts.capturedJobs > counts.resumeMatches && counts.resumeVersions > 0) {
     actions.push(action(1, 'match_resume_to_jd', 'captured_jd_ready', 'boss_watch_resume_match'))
   }
-  if (counts.verifiedLeads > 0 && counts.resumeVersions > 0) {
-    actions.push(action(2, 'prepare_official_application', 'verified_lead_ready', 'boss_watch_apply_preview'))
+  if (counts.resumeMatches > counts.gateAApprovals) {
+    actions.push(action(2, 'confirm_gate_a', 'resume_match_needs_confirmation', 'boss_watch_gate_a_confirm'))
+  }
+  if (counts.gateAApprovals > 0) {
+    actions.push(action(3, 'prepare_official_application', 'gate_a_confirmed', 'boss_watch_apply_preview'))
   }
   if (counts.feishuTargets === 0 && (counts.verifiedLeads > 0 || counts.capturedJobs > 0)) {
     actions.push(action(90, 'connect_feishu_target', 'feishu_projection_optional', 'boss_watch_feishu_target_preview'))

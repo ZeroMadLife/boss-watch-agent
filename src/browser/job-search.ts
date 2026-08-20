@@ -21,8 +21,13 @@ const CITY_CODES: Readonly<Record<string, string>> = {
   大连: "101070200",
 };
 
+const BOSS_SEARCH_PATHS = new Set(["/web/geek/job", "/web/geek/jobs"]);
+
 export const MAX_BOSS_SEARCH_PAGES = 2;
 export const MAX_BOSS_SEARCH_JOBS = 5;
+export const BOSS_SEARCH_MIN_NAVIGATION_INTERVAL_MS = 2_000;
+export const BOSS_SEARCH_RUN_COOLDOWN_MS = 30_000;
+export const BOSS_SEARCH_RISK_COOLDOWN_MS = 10 * 60 * 1_000;
 
 export interface BrowserJobSearchInput {
   readonly keyword: string;
@@ -60,6 +65,15 @@ export type BrowserJobSearchResult =
       readonly targetCount: 0;
     }
   | {
+      readonly status: "guarded";
+      readonly reason: "search_in_progress" | "search_cooldown" | "risk_cooldown";
+      readonly retryAfterMs: number;
+      readonly targetCount: 0;
+      readonly plan: BrowserJobSearchPlan;
+      readonly pagesVisited: 0;
+      readonly items: readonly [];
+    }
+  | {
       readonly status: "no_supported_tab";
       readonly reason: "no_boss_page" | "no_job_cards" | "no_job_list";
       readonly targetCount: 0 | 1;
@@ -77,7 +91,7 @@ export type BrowserJobSearchResult =
     }
   | {
       readonly status: "human_required";
-      readonly reason: "login" | "verification";
+      readonly reason: "login" | "verification" | "risk_control";
       readonly targetCount: number;
       readonly plan: BrowserJobSearchPlan;
       readonly pagesVisited: number;
@@ -111,7 +125,7 @@ export function createBrowserJobSearchPlan(input: BrowserJobSearchInput): Browse
 export function bossSearchUrl(plan: BrowserJobSearchPlan, page: number): string {
   if (!Number.isInteger(page) || page < 1 || page > plan.maxPages)
     throw new Error("invalid_boss_search_page");
-  const url = new URL("https://www.zhipin.com/web/geek/job");
+  const url = new URL("https://www.zhipin.com/web/geek/jobs");
   url.searchParams.set("query", plan.keyword);
   url.searchParams.set("city", CITY_CODES[plan.city] as string);
   if (page > 1) url.searchParams.set("page", String(page));
@@ -122,7 +136,9 @@ export function isBossSearchUrl(value: string | undefined): boolean {
   if (value === undefined) return false;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "www.zhipin.com" && url.pathname === "/web/geek/job";
+    return (
+      url.protocol === "https:" && url.hostname === "www.zhipin.com" && BOSS_SEARCH_PATHS.has(url.pathname)
+    );
   } catch {
     return false;
   }

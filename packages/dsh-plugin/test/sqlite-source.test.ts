@@ -26,6 +26,8 @@ test('reads captured jobs and append-only timeline without writing to SQLite', a
   const applicationId = 'application-fixture-1'
   const eventId = `event-${randomUUID()}`
   const occurredAt = '2026-08-16T01:00:00.000Z'
+  const laterAt = '2026-08-16T02:00:00.000Z'
+  const invalidConfirmationAt = '2026-08-16T03:00:00.000Z'
   database
     .prepare('INSERT INTO application_artifacts VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
     .run(
@@ -48,6 +50,33 @@ test('reads captured jobs and append-only timeline without writing to SQLite', a
       'status_change_proposed', JSON.stringify({
         type: 'status_change_proposed',
         payload: { to: 'awaiting_gate_b' },
+      }), null,
+    )
+  database
+    .prepare('INSERT INTO application_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(
+      `event-${randomUUID()}`, applicationId, 5, 'fixture-5', 'trace-5', occurredAt, 'human',
+      'status_change_confirmed', JSON.stringify({
+        type: 'status_change_confirmed',
+        payload: { to: 'submitted', source: 'user_manual_confirmation' },
+      }), null,
+    )
+  database
+    .prepare('INSERT INTO application_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(
+      `event-${randomUUID()}`, applicationId, 6, 'fixture-6', 'trace-6', laterAt, 'human',
+      'progress_signal_recorded', JSON.stringify({
+        type: 'progress_signal_recorded',
+        payload: { signalKind: 'assessment_invitation' },
+      }), null,
+    )
+  database
+    .prepare('INSERT INTO application_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(
+      `event-${randomUUID()}`, applicationId, 7, 'fixture-7', 'trace-7', invalidConfirmationAt, 'agent',
+      'status_change_confirmed', JSON.stringify({
+        type: 'status_change_confirmed',
+        payload: { to: 'offer', source: 'user_manual_confirmation' },
       }), null,
     )
   database
@@ -87,6 +116,9 @@ test('reads captured jobs and append-only timeline without writing to SQLite', a
       'status_change_proposed',
       'recruiter_message_captured',
       'interview_note_recorded',
+      'status_change_confirmed',
+      'progress_signal_recorded',
+      'status_change_confirmed',
     ])
     assert.deepEqual(await source.getApplicationOverview(applicationId), {
       applicationId,
@@ -95,14 +127,15 @@ test('reads captured jobs and append-only timeline without writing to SQLite', a
       jobUrl: 'https://example.invalid/jobs/1',
       capturedAt: occurredAt,
       contentHash: 'a'.repeat(64),
-      progressState: 'status_proposed',
-      eventCount: 4,
+      progressState: 'status_confirmed',
+      eventCount: 7,
       recruiterMessageCount: 1,
       interviewNoteCount: 1,
-      progressSignalCount: 0,
-      latestEventType: 'interview_note_recorded',
-      latestEventAt: occurredAt,
-      proposedStatus: 'awaiting_gate_b',
+      progressSignalCount: 1,
+      latestEventType: 'status_change_confirmed',
+      latestEventAt: invalidConfirmationAt,
+      confirmedStatus: 'submitted',
+      confirmedAt: occurredAt,
     })
 
     const readOnlyCheck = new DatabaseSync(databasePath, { readOnly: true })

@@ -7,18 +7,27 @@ import { LarkCliFeishuClient } from '../src/feishu-client.ts'
 
 interface CliFixture {
   readonly listData: unknown
+  readonly listResponses?: readonly unknown[]
   readonly upsertData?: unknown
 }
 
 async function withFakeCli<T>(fixture: CliFixture, run: (command: string) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), 'boss-watch-feishu-'))
   const command = join(directory, 'lark-cli')
+  const statePath = join(directory, 'list-count')
   const script = [
     '#!/usr/bin/env node',
+    'const fs = require("node:fs");',
     `const listData = ${JSON.stringify(fixture.listData)};`,
+    `const listResponses = ${JSON.stringify(fixture.listResponses ?? [])};`,
+    `const statePath = ${JSON.stringify(statePath)};`,
     `const upsertData = ${JSON.stringify(fixture.upsertData ?? { ok: true, data: {} })};`,
     'const args = process.argv.slice(2);',
-    'const data = args.includes("+record-upsert") ? upsertData : listData;',
+    'let listCount = 0;',
+    'try { listCount = Number(fs.readFileSync(statePath, "utf8")); } catch {}',
+    'const listResponse = listResponses.length === 0 ? listData : listResponses[Math.min(listCount, listResponses.length - 1)];',
+    'if (!args.includes("+record-upsert")) fs.writeFileSync(statePath, String(listCount + 1));',
+    'const data = args.includes("+record-upsert") ? upsertData : listResponse;',
     'process.stdout.write(JSON.stringify({ ok: true, data }));',
   ].join('\n')
   await writeFile(command, `${script}\n`, 'utf8')
@@ -42,7 +51,7 @@ test('parses lark-cli record-list rows with field_id_list and record_id_list', a
       has_more: false,
     },
   }, async (command) => {
-    const client = new LarkCliFeishuClient({ command })
+    const client = new LarkCliFeishuClient({ command, recoveryAttempts: 1 })
     const result = await client.listRecords({ baseToken: 'base-test', tableId: 'tbl-test' })
     assert.deepEqual(result, {
       records: [
@@ -108,6 +117,47 @@ test('recovers the created record id by uniquely matching identity fields', asyn
   })
 })
 
+test('retries a bounded read after create until the record becomes visible', async () => {
+  await withFakeCli({
+    upsertData: { success: true },
+    listData: {},
+    listResponses: [
+      {
+        data: [],
+        field_id_list: ['fld-url'],
+        record_id_list: [],
+        has_more: false,
+      },
+      {
+        data: [['https://jobs.example.invalid/eventual']],
+        field_id_list: ['fld-url'],
+        record_id_list: ['rec-eventual'],
+        has_more: false,
+      },
+    ],
+  }, async (command) => {
+    const delays: number[] = []
+    const client = new LarkCliFeishuClient({
+      command,
+      recoveryAttempts: 3,
+      recoveryDelayMs: 25,
+      sleep: (milliseconds) => {
+        delays.push(milliseconds)
+        return Promise.resolve()
+      },
+    })
+    const result = await client.createRecord({
+      baseToken: 'base-test',
+      tableId: 'tbl-test',
+      fields: { 'fld-url': 'https://jobs.example.invalid/eventual' },
+      identityFieldIds: ['fld-url'],
+    })
+
+    assert.deepEqual(result, { recordId: 'rec-eventual' })
+    assert.deepEqual(delays, [25])
+  })
+})
+
 test('fails closed when created record identity is ambiguous', async () => {
   await withFakeCli({
     upsertData: { success: true },
@@ -121,7 +171,7 @@ test('fails closed when created record identity is ambiguous', async () => {
       has_more: false,
     },
   }, async (command) => {
-    const client = new LarkCliFeishuClient({ command })
+    const client = new LarkCliFeishuClient({ command, recoveryAttempts: 1 })
     await assert.rejects(
       () => client.createRecord({
         baseToken: 'base-test',
@@ -144,7 +194,7 @@ test('fails closed when created record cannot be found after upsert', async () =
       has_more: false,
     },
   }, async (command) => {
-    const client = new LarkCliFeishuClient({ command })
+    const client = new LarkCliFeishuClient({ command, recoveryAttempts: 1 })
     await assert.rejects(
       () => client.createRecord({
         baseToken: 'base-test',

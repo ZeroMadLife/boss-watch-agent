@@ -217,8 +217,8 @@ describe("Boss Browser Run Controller", () => {
 
   it("searches bounded pages, deduplicates external ids, captures details serially, and closes temporary tabs", async () => {
     const listUrls = [
-      "https://www.zhipin.com/web/geek/job?query=agent&city=101020100",
-      "https://www.zhipin.com/web/geek/job?query=agent&city=101020100&page=2",
+      "https://www.zhipin.com/web/geek/jobs?query=agent&city=101020100",
+      "https://www.zhipin.com/web/geek/jobs?query=agent&city=101020100&page=2",
     ];
     const detailUrls = [
       "https://www.zhipin.com/job_detail/search-001.html",
@@ -299,6 +299,7 @@ describe("Boss Browser Run Controller", () => {
       }),
       captureJob,
       now: () => new Date("2026-08-18T02:00:00.000Z"),
+      searchMinNavigationIntervalMs: 0,
     });
 
     const result = await controller.searchJobs({ keyword: "agent", city: "上海", maxPages: 2, maxJobs: 3 });
@@ -319,6 +320,308 @@ describe("Boss Browser Run Controller", () => {
     ]);
     expect(close).toHaveBeenCalledTimes(5);
     expect(captureJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts BOSS's redirected plural search path and waits for hydrated cards", async () => {
+    const detailUrl = "https://www.zhipin.com/job_detail/search-redirected.html";
+    const newTab = vi.fn(async (url: string) =>
+      url.includes("job_detail") ? "redirected-detail" : "redirected-list",
+    );
+    const close = vi.fn(async () => {});
+    let listEvaluations = 0;
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async evaluate(_targetId, expression) {
+          if (expression.includes("job-card-wrap")) {
+            listEvaluations += 1;
+            return listEvaluations < 3
+              ? {
+                  status: "ready",
+                  sourceUrl: "https://www.zhipin.com/web/geek/jobs?query=agent&city=101020100",
+                  jobs: [],
+                }
+              : {
+                  status: "ready",
+                  sourceUrl: "https://www.zhipin.com/web/geek/jobs?query=agent&city=101020100",
+                  jobs: [{ externalJobId: "search-redirected", role: "Agent 工程师", jobUrl: detailUrl }],
+                };
+          }
+          return {
+            status: "ready",
+            sourceUrl: detailUrl,
+            externalJobId: "search-redirected",
+            company: "示例科技",
+            role: "Agent 工程师",
+            description: "虚构 JD",
+          };
+        },
+        newTab,
+        close,
+      }),
+      captureJob: vi.fn(
+        async (): Promise<CaptureResult> => ({
+          applicationId: "application-redirected",
+          eventId: "event-redirected",
+          artifactId: "artifact-redirected",
+          artifactRef: "local-artifact://application/artifact-redirected",
+          contentHash: "e".repeat(64),
+          savedAt: "2026-08-19T02:00:00.000Z",
+          deduplicated: false,
+        }),
+      ),
+      sleep: vi.fn(async () => {}),
+    });
+
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "ok",
+      pagesVisited: 1,
+      items: [{ status: "captured", job: { externalJobId: "search-redirected" } }],
+    });
+    expect(listEvaluations).toBe(3);
+    expect(close).toHaveBeenCalledWith("redirected-list");
+    expect(close).toHaveBeenCalledWith("redirected-detail");
+  });
+
+  it("serializes searches and applies a cooldown after navigation", async () => {
+    let now = new Date("2026-08-19T02:00:00.000Z");
+    let currentUrl = "";
+    const newTab = vi.fn(async (url: string) => {
+      currentUrl = url;
+      return "guard-list";
+    });
+    const close = vi.fn(async () => {});
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async evaluate(_targetId, expression) {
+          if (expression.includes("job-card-wrap")) {
+            return { status: "ready", sourceUrl: currentUrl, jobs: [] };
+          }
+          return { status: "page_adapter_mismatch" };
+        },
+        newTab,
+        close,
+      }),
+      captureJob: vi.fn(),
+      now: () => now,
+      sleep: vi.fn(async () => {
+        now = new Date(now.getTime() + 2_000);
+      }),
+      searchMinNavigationIntervalMs: 2_000,
+      searchRunCooldownMs: 30_000,
+    });
+
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "no_supported_tab",
+      reason: "no_job_cards",
+    });
+    expect(controller.searchGuardStatus()).toEqual({
+      state: "search_cooldown",
+      guarded: true,
+      retryAfterMs: 30_000,
+      observedAt: "2026-08-19T02:00:10.000Z",
+      scope: "controller_process",
+      resetsOnRestart: true,
+    });
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "guarded",
+      reason: "search_cooldown",
+      targetCount: 0,
+    });
+    expect(newTab).toHaveBeenCalledOnce();
+
+    now = new Date(now.getTime() + 30_000);
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "no_supported_tab",
+      reason: "no_job_cards",
+    });
+    expect(newTab).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes list and detail tabs when a detail page fails to load", async () => {
+    const detailUrl = "https://www.zhipin.com/job_detail/search-load-failure.html";
+    const close = vi.fn(async () => {});
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async evaluate(_targetId, expression) {
+          if (expression.includes("job-card-wrap")) {
+            return {
+              status: "ready",
+              sourceUrl: "https://www.zhipin.com/web/geek/jobs?query=agent&city=101020100",
+              jobs: [{ externalJobId: "search-load-failure", role: "Agent 工程师", jobUrl: detailUrl }],
+            };
+          }
+          return { status: "page_adapter_mismatch" };
+        },
+        newTab: vi.fn(async (url: string) => (url.includes("job_detail") ? "failed-detail" : "failed-list")),
+        waitForLoad: vi.fn(async (targetId: string) => {
+          if (targetId === "failed-detail") throw new Error("browser_disconnected");
+        }),
+        close,
+      }),
+      captureJob: vi.fn(),
+      searchMinNavigationIntervalMs: 0,
+      searchRunCooldownMs: 0,
+    });
+
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "environment_interrupted",
+      reason: "browser_disconnected",
+    });
+    expect(close).toHaveBeenCalledWith("failed-detail");
+    expect(close).toHaveBeenCalledWith("failed-list");
+  });
+
+  it("rejects a concurrent search before opening a second list page", async () => {
+    let releaseNavigation: ((targetId: string) => void) | undefined;
+    let navigationStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      navigationStarted = resolve;
+    });
+    const newTab = vi.fn(
+      async () =>
+        new Promise<string>((resolve) => {
+          releaseNavigation = resolve;
+          navigationStarted?.();
+        }),
+    );
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async evaluate() {
+          return {
+            status: "ready",
+            sourceUrl: "https://www.zhipin.com/web/geek/jobs?query=agent&city=101020100",
+            jobs: [],
+          };
+        },
+        newTab,
+      }),
+      captureJob: vi.fn(),
+      sleep: vi.fn(async () => {}),
+      searchMinNavigationIntervalMs: 0,
+      searchRunCooldownMs: 0,
+    });
+
+    const first = controller.searchJobs({ keyword: "agent", city: "上海" });
+    await started;
+    expect(controller.searchGuardStatus()).toMatchObject({ state: "search_in_progress", guarded: true });
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "guarded",
+      reason: "search_in_progress",
+    });
+    expect(newTab).toHaveBeenCalledOnce();
+    releaseNavigation?.("concurrent-list");
+    await expect(first).resolves.toMatchObject({ status: "no_supported_tab", reason: "no_job_cards" });
+  });
+
+  it("closes the temporary list when the caller cancels during page load", async () => {
+    const abortController = new AbortController();
+    const close = vi.fn(async () => {});
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        newTab: vi.fn(async () => "cancelled-list"),
+        waitForLoad: vi.fn(async (_targetId, _timeoutMs, signal) => {
+          abortController.abort();
+          expect(signal?.aborted).toBe(true);
+        }),
+        close,
+      }),
+      captureJob: vi.fn(),
+      searchMinNavigationIntervalMs: 0,
+      searchRunCooldownMs: 0,
+    });
+
+    await expect(
+      controller.searchJobs({ keyword: "agent", city: "上海" }, abortController.signal),
+    ).resolves.toMatchObject({ status: "cancelled", pagesVisited: 0, items: [] });
+    expect(close).toHaveBeenCalledWith("cancelled-list");
+  });
+
+  it("stops on a risk-control page and applies a longer risk cooldown", async () => {
+    const now = new Date("2026-08-19T02:00:00.000Z");
+    let currentUrl = "";
+    const newTab = vi.fn(async (url: string) => {
+      currentUrl = url;
+      return url.includes("job_detail") ? "risk-detail" : "risk-list";
+    });
+    const close = vi.fn(async () => {});
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async evaluate(_targetId, expression) {
+          if (expression.includes("job-card-wrap")) {
+            return {
+              status: "ready",
+              sourceUrl: currentUrl,
+              jobs: [
+                {
+                  externalJobId: "risk-001",
+                  role: "工程师",
+                  jobUrl: "https://www.zhipin.com/job_detail/risk-001.html",
+                },
+              ],
+            };
+          }
+          return {
+            status: "human_required",
+            reason: "risk_control",
+            sourceUrl: currentUrl,
+          };
+        },
+        newTab,
+        close,
+      }),
+      captureJob: vi.fn(),
+      now: () => now,
+      sleep: vi.fn(async () => {}),
+      searchMinNavigationIntervalMs: 0,
+      searchRiskCooldownMs: 600_000,
+      searchRunCooldownMs: 0,
+    });
+
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "human_required",
+      reason: "risk_control",
+    });
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "guarded",
+      reason: "risk_cooldown",
+      retryAfterMs: 600_000,
+    });
+    expect(controller.searchGuardStatus()).toMatchObject({
+      state: "risk_cooldown",
+      guarded: true,
+      retryAfterMs: 600_000,
+      scope: "controller_process",
+      resetsOnRestart: true,
+    });
+    expect(newTab).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledWith("risk-list");
+    expect(close).not.toHaveBeenCalledWith("risk-detail");
+  });
+
+  it("keeps an unsupported search tab open for human diagnosis", async () => {
+    const close = vi.fn(async () => {});
+    const controller = new BossBrowserRunController({
+      runtime: runtime({
+        async evaluate() {
+          return {
+            status: "ready",
+            sourceUrl: "https://www.zhipin.com/web/user/?ka=header-login",
+            jobs: [],
+          };
+        },
+        newTab: vi.fn(async () => "search-login-tab"),
+        close,
+      }),
+      captureJob: vi.fn(),
+      sleep: vi.fn(async () => {}),
+    });
+
+    await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({
+      status: "human_required",
+      reason: "login",
+    });
+    expect(close).not.toHaveBeenCalled();
   });
 
   it("stops a bounded search at a verification handoff without opening another detail", async () => {
@@ -352,6 +655,7 @@ describe("Boss Browser Run Controller", () => {
         close,
       }),
       captureJob: vi.fn(),
+      searchMinNavigationIntervalMs: 0,
     });
 
     await expect(controller.searchJobs({ keyword: "agent", city: "上海" })).resolves.toMatchObject({

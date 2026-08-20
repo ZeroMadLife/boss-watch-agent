@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import type {
   BrowserCapture,
+  BrowserApplicationFormFill,
+  BrowserApplicationFormFillInput,
   BrowserApplicationFormInspection,
   BrowserConversationCapture,
   BrowserDiscoveredCapture,
@@ -10,6 +12,7 @@ import type {
   BrowserJobSearchInput,
   BrowserJobSearchResult,
   BrowserStatus,
+  BrowserSearchGuardStatus,
   BrowserWatchPoll,
   BossWatchBrowserController,
 } from './domain.ts'
@@ -36,6 +39,10 @@ export class LocalBossWatchBrowserController implements BossWatchBrowserControll
 
   async status(): Promise<BrowserStatus> {
     return this.#request<BrowserStatus>('/api/v1/browser/status', { method: 'GET' })
+  }
+
+  async searchGuardStatus(): Promise<BrowserSearchGuardStatus> {
+    return this.#request<BrowserSearchGuardStatus>('/api/v1/browser/jobs/search/status', { method: 'GET' })
   }
 
   async captureCurrentJob(): Promise<BrowserCapture> {
@@ -83,6 +90,14 @@ export class LocalBossWatchBrowserController implements BossWatchBrowserControll
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ expectedUrl }),
+    })
+  }
+
+  async fillApplicationForm(input: BrowserApplicationFormFillInput): Promise<BrowserApplicationFormFill> {
+    return this.#request<BrowserApplicationFormFill>('/api/v1/browser/forms/fill', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
     })
   }
 

@@ -61,6 +61,12 @@ export interface FeishuClient {
     fields: Readonly<Record<string, unknown>>
     identityFieldIds?: readonly string[]
   }): Promise<{ readonly recordId: string }>
+  recoverCreatedRecord?(input: {
+    baseToken: string
+    tableId: string
+    fields: Readonly<Record<string, unknown>>
+    identityFieldIds?: readonly string[]
+  }): Promise<{ readonly recordId: string }>
   updateRecord(input: { baseToken: string; tableId: string; recordId: string; fields: Readonly<Record<string, unknown>> }): Promise<{ readonly recordId: string }>
 }
 
@@ -80,11 +86,30 @@ export class LarkCliFeishuClient implements FeishuClient {
   readonly #command: string
   readonly #timeoutMs: number
   readonly #maxBuffer: number
+  readonly #recoveryAttempts: number
+  readonly #recoveryDelayMs: number
+  readonly #sleep: (milliseconds: number) => Promise<void>
 
-  constructor(options: { command?: string; timeoutMs?: number; maxBuffer?: number } = {}) {
+  constructor(options: {
+    command?: string
+    timeoutMs?: number
+    maxBuffer?: number
+    recoveryAttempts?: number
+    recoveryDelayMs?: number
+    sleep?: (milliseconds: number) => Promise<void>
+  } = {}) {
     this.#command = options.command ?? 'lark-cli'
     this.#timeoutMs = options.timeoutMs ?? 20_000
     this.#maxBuffer = options.maxBuffer ?? 2 * 1024 * 1024
+    this.#recoveryAttempts = options.recoveryAttempts ?? 4
+    this.#recoveryDelayMs = options.recoveryDelayMs ?? 250
+    this.#sleep = options.sleep ?? ((milliseconds) => new Promise(resolve => setTimeout(resolve, milliseconds)))
+    if (!Number.isInteger(this.#recoveryAttempts) || this.#recoveryAttempts < 1 || this.#recoveryAttempts > 10) {
+      throw new Error('invalid_feishu_recovery_attempts')
+    }
+    if (!Number.isInteger(this.#recoveryDelayMs) || this.#recoveryDelayMs < 0 || this.#recoveryDelayMs > 10_000) {
+      throw new Error('invalid_feishu_recovery_delay')
+    }
   }
 
   async resolveUrl(url: string): Promise<FeishuResolvedUrl> {
@@ -195,7 +220,7 @@ export class LarkCliFeishuClient implements FeishuClient {
       '--json', JSON.stringify(input.fields),
     )
     const recordId = parseRecordId(data)
-    return recordId === undefined ? this.#recoverCreatedRecord(input) : { recordId }
+    return recordId === undefined ? this.recoverCreatedRecord(input) : { recordId }
   }
 
   async updateRecord(input: Parameters<FeishuClient['updateRecord']>[0]): Promise<{ readonly recordId: string }> {
@@ -209,8 +234,22 @@ export class LarkCliFeishuClient implements FeishuClient {
     return { recordId: parseRecordId(data, input.recordId) ?? input.recordId }
   }
 
-  async #recoverCreatedRecord(input: Parameters<FeishuClient['createRecord']>[0]): Promise<{ readonly recordId: string }> {
+  async recoverCreatedRecord(input: Parameters<FeishuClient['createRecord']>[0]): Promise<{ readonly recordId: string }> {
     const identityFieldIds = normalizeIdentityFieldIds(input.identityFieldIds, input.fields)
+    for (let attempt = 0; attempt < this.#recoveryAttempts; attempt += 1) {
+      const record = await this.#findCreatedRecord(input, identityFieldIds)
+      if (record !== undefined) return { recordId: record.recordId }
+      if (attempt + 1 < this.#recoveryAttempts) {
+        await this.#sleep(this.#recoveryDelayMs * 2 ** attempt)
+      }
+    }
+    throw new Error('feishu_write_record_not_found_after_create')
+  }
+
+  async #findCreatedRecord(
+    input: Parameters<FeishuClient['createRecord']>[0],
+    identityFieldIds: readonly string[],
+  ): Promise<FeishuRecord | undefined> {
     const matches: FeishuRecord[] = []
     let offset = 0
     for (;;) {
@@ -228,9 +267,7 @@ export class LarkCliFeishuClient implements FeishuClient {
       offset = nextOffset
       if (offset > 10_000) throw new Error('feishu_record_limit_exceeded')
     }
-    const record = matches[0]
-    if (record === undefined) throw new Error('feishu_write_record_not_found_after_create')
-    return { recordId: record.recordId }
+    return matches[0]
   }
 
   async #run(...args: string[]): Promise<unknown> {

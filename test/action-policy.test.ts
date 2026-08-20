@@ -14,12 +14,16 @@ describe("decideAction", () => {
     expect(decideAction(action).decision).toBe("allow");
   });
 
-  it.each(["sync_feishu", "send_message", "send_resume", "schedule_follow_up", "accept_interview"])(
-    "requires approval for side effect %s",
-    (action) => {
-      expect(decideAction(action).decision).toBe("require_approval");
-    },
-  );
+  it.each([
+    "sync_feishu",
+    "prefill_application",
+    "send_message",
+    "send_resume",
+    "schedule_follow_up",
+    "accept_interview",
+  ])("requires approval for side effect %s", (action) => {
+    expect(decideAction(action).decision).toBe("require_approval");
+  });
 
   it("denies unknown actions by default", () => {
     expect(decideAction("open_arbitrary_url")).toEqual({
