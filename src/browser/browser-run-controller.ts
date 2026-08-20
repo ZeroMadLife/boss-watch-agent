@@ -1565,11 +1565,15 @@ export function createApplicationFormFillExpression(fields: readonly Application
       ? type
       : 'other';
   };
+  const isCustomSelect = (element) => element.matches('[role=combobox], [aria-haspopup=listbox]');
   const controls = Array.from(document.querySelectorAll('input, textarea, select, [role=combobox], [aria-haspopup=listbox]'))
     .filter((element) => {
       const type = clean(element.getAttribute('type') || 'text', 32).toLowerCase();
-      return isVisible(element) && (element.matches('[role=combobox], [aria-haspopup=listbox]') || !['hidden', 'submit', 'reset', 'button', 'image'].includes(type));
-    });
+      return isVisible(element) && (isCustomSelect(element) || !['hidden', 'submit', 'reset', 'button', 'image'].includes(type));
+    })
+    .filter((element, index, visibleControls) => !visibleControls.some((candidate, candidateIndex) =>
+      candidateIndex !== index && isCustomSelect(candidate) && candidate.contains(element)
+    ));
   const normalizeOption = (value) => clean(value, 500).toLocaleLowerCase('zh-CN');
   const optionMatches = (wanted, label, value) => {
     if (label === wanted || value === wanted) return true;

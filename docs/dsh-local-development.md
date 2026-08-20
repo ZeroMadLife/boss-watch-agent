@@ -31,8 +31,9 @@ export BOSS_HUNTER_DIR=/path/to/BossHunter
 - DSH 依赖：按上游仓库说明安装后再启动本项目
 
 DSH 源码仓库保持独立。需要阅读或修改 DSH 通用能力时，在 DSH 仓库单独创建分支；求职业务不直接写入 DSH 仓库。
-公开 CI 当前固定验证 `deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`；本机可以阅读更新版本，
-但稳定兼容声明只跟随通过完整 CI 的 pinned commit。
+公开 CI 当前固定验证 `deepseek-harness@141eb6fef83422698aef7a981029e843e8161534`
+（`dsh-v0.1.0-rc.8`）。插件构建使用仓内的外部插件 preset，不再导入 DSH monorepo 私有构建辅助。
+稳定兼容声明只跟随通过完整 CI 的 pinned commit。
 
 ## 启动 Browser Runtime 与本地服务
 
@@ -64,10 +65,13 @@ npm run dsh:dev
 
 默认配置：
 
-- `DSH_SOURCE_DIR`：默认寻找业务仓同级的 `deepseek-harness`
+- `DSH_SOURCE_DIR`：优先寻找业务仓同级的 `deepseek-harness-rc8`，不存在时回退到 `deepseek-harness`
 - `DSH_PROFILE=web`
 - `DSH_WEB_PORT=3080`
-- `DSH_HOME=~/Library/Application Support/BossWatchAgent/dsh`
+- `DSH_HOME`：rc.8 默认使用 `~/Library/Application Support/BossWatchAgent/dsh-rc8-compat`；旧 checkout 使用 `.../dsh`
+
+rc.8 的 DSH 自身 SQLite 存储格式与旧版不兼容，因此两个 `DSH_HOME` 必须隔离。Boss Watch 的业务 SQLite
+不受该变化影响；不要把旧 DSH storage 文件直接复制到 rc.8 目录。
 
 自定义 DSH checkout 或端口：
 
@@ -124,6 +128,9 @@ DSH_HOME="$HOME/Library/Application Support/BossWatchAgent/dsh" \
 | `boss_watch_resume_import_apply` | 确认后创建不可变 ResumeVersion | 写内容寻址本地工件和 SQLite 元数据，不上传 |
 | `boss_watch_resume_list/get` | 列出或读取简历版本元数据 | 无，不返回正文或绝对路径 |
 | `boss_watch_resume_match` | 用本地 ResumeVersion 与已捕获 BOSS JD 做可解释匹配 | 只读本地工件；不返回正文、不调用模型、不上传、不授权投递 |
+| `boss_watch_search_plan_preview` | 本地求职偏好 | 无；生成来源顺序和上限，不访问外部来源 |
+| `boss_watch_growth_plan_preview` | 受控 Obsidian Markdown 文件名/标题 | 无；不返回正文、不写 Vault |
+| `boss_watch_feishu_reconcile_preview` | 本地事实、投影和 Feishu 当前记录 | 无；只读对账，不采纳远端状态 |
 | `boss_watch_apply_preview` | 已核验候选与已登记 ResumeVersion 的官网投递前预览 | 只读本地元数据；不打开官网、不读取简历正文、不填表、不提交 |
 | `boss_watch_application_form_autofill` | 用户明确说“填当前页/继续填”后扫描当前 ATS 页，并一次填写确定性字段/下拉和上传 Gate A 简历 | 当前页一次性授权；个人值不进入结果，不勾选协议、不提交 |
 | `boss_watch_application_form_preview` | 检查用户已打开的已核验官网/ATS 标准表单，并按本地简历证据分类字段 | 只读页面与本地简历；现有值脱敏，不导航、不填表、不上传、不提交 |

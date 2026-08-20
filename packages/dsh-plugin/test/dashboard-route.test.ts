@@ -38,6 +38,21 @@ const candidates = [{
   nextTool: 'boss_watch_resume_match',
 }] as const
 
+const resumeVersion = {
+  resumeVersionId: 'resume-version:fixture',
+  displayName: '不应进入工作台快照',
+  localArtifactRef: 'resume-artifact://fixture.pdf',
+  contentHash: 'a'.repeat(64),
+  mediaType: 'application/pdf',
+  byteSize: 1024,
+  createdAt: '2026-08-19T03:00:00.000Z',
+} as const
+
+const resumeMatch = {
+  applicationId: 'application:fixture',
+  resume: { resumeVersionId: resumeVersion.resumeVersionId },
+} as const
+
 test('serves a bounded read-only dashboard snapshot through the DSH host route', async () => {
   let registeredPath = ''
   let handler: ((request: { method?: string }, response: ServerResponse) => void | Promise<void>) | undefined
@@ -53,6 +68,21 @@ test('serves a bounded read-only dashboard snapshot through the DSH host route',
       assert.deepEqual(options, { limit: 100 })
       return candidates
     } } as unknown as LocalCandidateBoardService,
+    resumeVersions: { list(options) {
+      assert.deepEqual(options, { limit: 20 })
+      return [resumeVersion]
+    } },
+    resumeMatches: { list(options) {
+      assert.deepEqual(options, { limit: 100 })
+      return [resumeMatch]
+    } } as never,
+    candidateProfile: { getSummary() {
+      return {
+        profileId: 'candidate-profile:default', strategyVersion: 'candidate-profile-v1',
+        updatedAt: '2026-08-19T03:30:00.000Z', contentHash: 'b'.repeat(64),
+        availableFields: ['preferredCity', 'positionKeywords'], valuesReturned: false,
+      }
+    } },
     now: () => new Date('2026-08-19T04:00:00.000Z'),
   })
 
@@ -68,8 +98,21 @@ test('serves a bounded read-only dashboard snapshot through the DSH host route',
     readOnly: true,
     overview,
     candidates,
+    resumeCenter: {
+      versions: [{
+        resumeVersionId: 'resume-version:fixture', current: true, mediaType: 'application/pdf', byteSize: 1024,
+        createdAt: '2026-08-19T03:00:00.000Z', parseStatus: 'parsed_for_matching', matchedJobCount: 1,
+        matchedJobCountLimited: false,
+      }],
+      count: 1,
+      candidateProfile: {
+        configured: true, availableFieldCount: 2, totalFieldCount: 5, valuesReturned: false,
+        updatedAt: '2026-08-19T03:30:00.000Z',
+      },
+    },
     count: 1,
   })
+  assert.doesNotMatch(JSON.stringify(response.body()), /不应进入工作台快照|resume-artifact|aaaaaaaa/u)
   dispose()
   assert.equal(registeredPath, '')
 })

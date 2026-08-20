@@ -35,6 +35,12 @@ export interface CandidateProfileSummary {
   readonly valuesReturned: false
 }
 
+/** Planning-only values for the local search planner; callers must not echo sensitive fields. */
+export interface CandidateSearchPlanningValues {
+  readonly preferredCity?: string
+  readonly positionKeywords?: string
+}
+
 export interface CandidateProfilePreview extends CandidateProfileSummary {
   readonly previewToken: string
   readonly expiresAt: string
@@ -136,6 +142,15 @@ export class LocalCandidateProfileService {
   getSummary(): CandidateProfileSummary | undefined {
     const profile = this.#store.get()
     return profile === undefined ? undefined : summarize(profile)
+  }
+
+  getSearchPlanningValues(): CandidateSearchPlanningValues | undefined {
+    const values = this.#store.get()?.values
+    if (values === undefined) return undefined
+    return {
+      ...values.preferredCity === undefined ? {} : { preferredCity: values.preferredCity },
+      ...values.positionKeywords === undefined ? {} : { positionKeywords: values.positionKeywords },
+    }
   }
 
   preview(input: CandidateProfileValues, sessionId = 'local-session'): CandidateProfilePreview {

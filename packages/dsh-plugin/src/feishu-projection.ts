@@ -290,6 +290,27 @@ export interface FeishuSyncApplyResult {
   readonly counts: { readonly created: number; readonly updated: number; readonly unchanged: number }
 }
 
+export type FeishuReconcileState = 'in_sync' | 'local_ahead' | 'remote_ahead' | 'conflict' | 'missing_remote'
+
+export interface FeishuReconcileItem {
+  readonly applicationId: string
+  readonly company: string
+  readonly role: string
+  readonly state: FeishuReconcileState
+  readonly remoteRecordId?: string
+  readonly diffs?: Readonly<Record<string, { readonly before: string; readonly after: string }>>
+  readonly reason?: string
+}
+
+export interface FeishuReconcilePreview {
+  readonly targetId: string
+  readonly schemaHash: string
+  readonly checkedAt: string
+  readonly items: readonly FeishuReconcileItem[]
+  readonly counts: Readonly<Record<FeishuReconcileState, number>>
+  readonly readOnly: true
+}
+
 interface StoredTargetPreview {
   readonly kind: 'target'
   readonly target: FeishuTargetPreview
@@ -487,6 +508,60 @@ export class LocalFeishuProjectionService {
     })
     this.#prunePreviews()
     return preview
+  }
+
+  /** Compare local facts with saved projections and remote rows without writing either side. */
+  async reconcilePreview(targetId: string, applicationIds?: readonly string[]): Promise<FeishuReconcilePreview> {
+    const target = this.#store.getTarget(requireText(targetId, 'target_id'))
+    if (target === undefined) throw new Error('feishu_target_not_found')
+    const fields = await this.#client.listFields(target.baseToken, target.tableId)
+    const schemaHash = hashFields(fields)
+    if (schemaHash !== target.schemaHash) throw new Error('feishu_schema_changed')
+    const ids = applicationIds === undefined
+      ? (await this.#source.listApplicationOverviews(10_000)).map(item => item.applicationId)
+      : normalizeApplicationIds(applicationIds)
+    const records = await this.#listAllRecords(target, fields)
+    const items: FeishuReconcileItem[] = []
+    for (const applicationId of ids) {
+      const current = await buildLocalProjection(this.#source, applicationId, target.mapping)
+      if (current === undefined) {
+        items.push({ applicationId, company: '', role: '', state: 'conflict', reason: 'application_not_found' })
+        continue
+      }
+      const stored = this.#store.getProjection(target.targetId, applicationId)
+      const remote = stored === undefined
+        ? matchRemoteRecord(records, target.mapping, current)
+        : { kind: 'match' as const, record: records.find(record => record.recordId === stored.remoteRecordId) }
+      if (remote.kind === 'conflict') {
+        items.push({ applicationId, company: current.company, role: current.role, state: 'conflict', reason: remote.reason })
+        continue
+      }
+      if (remote.record === undefined) {
+        items.push({ applicationId, company: current.company, role: current.role, state: 'missing_remote', reason: stored === undefined ? 'not_projected' : 'record_not_found' })
+        continue
+      }
+      const diffs = diffFields(remote.record.fields, current.fields, target.mapping)
+      if (Object.keys(diffs).length === 0) {
+        items.push({ applicationId, company: current.company, role: current.role, state: 'in_sync', remoteRecordId: remote.record.recordId })
+        continue
+      }
+      if (stored === undefined) {
+        items.push({ applicationId, company: current.company, role: current.role, state: 'remote_ahead', remoteRecordId: remote.record.recordId, diffs })
+        continue
+      }
+      const localChanged = stored.sourceHash !== current.sourceHash
+      items.push({
+        applicationId,
+        company: current.company,
+        role: current.role,
+        state: localChanged ? 'conflict' : 'remote_ahead',
+        remoteRecordId: remote.record.recordId,
+        diffs,
+      })
+    }
+    const states: FeishuReconcileState[] = ['in_sync', 'local_ahead', 'remote_ahead', 'conflict', 'missing_remote']
+    const counts = Object.fromEntries(states.map(state => [state, items.filter(item => item.state === state).length])) as Record<FeishuReconcileState, number>
+    return { targetId: target.targetId, schemaHash, checkedAt: new Date().toISOString(), items, counts, readOnly: true }
   }
 
   async syncApply(previewToken: string, confirmed: boolean): Promise<FeishuSyncApplyResult> {

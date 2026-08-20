@@ -5,10 +5,15 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync, spawn } from 'node:child_process'
 
 const repositoryDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const sourceDir = resolve(process.env.DSH_SOURCE_DIR ?? join(repositoryDir, '..', 'deepseek-harness'))
+const rc8SourceDir = join(repositoryDir, '..', 'deepseek-harness-rc8')
+const sourceDir = resolve(
+  process.env.DSH_SOURCE_DIR ?? (existsSync(rc8SourceDir) ? rc8SourceDir : join(repositoryDir, '..', 'deepseek-harness')),
+)
 const profile = process.env.DSH_PROFILE ?? 'web'
 const port = process.env.DSH_WEB_PORT ?? '3080'
-const dshHome = process.env.DSH_HOME ?? join(homedir(), 'Library', 'Application Support', 'BossWatchAgent', 'dsh')
+const defaultDshHome = sourceDir === resolve(rc8SourceDir) ? 'dsh-rc8-compat' : 'dsh'
+const dshHome = process.env.DSH_HOME
+  ?? join(homedir(), 'Library', 'Application Support', 'BossWatchAgent', defaultDshHome)
 const visionPatch = fileURLToPath(new URL('./dsh-vision-default.patch.yml', import.meta.url))
 
 if (!existsSync(join(sourceDir, 'apps', 'cli', 'src', 'bin.ts'))) {

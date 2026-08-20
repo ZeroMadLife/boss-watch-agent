@@ -45,6 +45,7 @@ import type { LocalResumeMatchingService, ResumeMatchStore } from "./resume-matc
 import type { LocalResumeImportService, ResumeVersionStore } from "./resume-version.js";
 import type { VisualLeadImportService, VisualLeadRowInput } from "./visual-lead-import.js";
 import type { LocalWorkspaceOverviewService } from "./workspace-overview.js";
+import type { LocalKnowledgeGrowthService } from "./knowledge-growth.js";
 
 const unsafeDefineTool = dshDefineTool as unknown as (
   options: DefineToolOptions<ParameterSchemaSpec, ValueSchemaSpec>,
@@ -836,6 +837,7 @@ export function registerBossWatchTools(
   gateA?: LocalGateAService,
   applicationStatus?: LocalApplicationStatusClient,
   candidateProfile?: LocalCandidateProfileService,
+  knowledgeGrowth?: LocalKnowledgeGrowthService,
 ): () => void {
   const disposers = [
     ctx.tools.register(
@@ -1334,6 +1336,36 @@ export function registerBossWatchTools(
     ),
     ctx.tools.register(
       defineTool({
+        name: "boss_watch_growth_plan_preview",
+        description: "Read a bounded Obsidian Markdown index and produce local learning recommendations from missing skills or target roles. Never returns note bodies and never writes the vault.",
+        parameters: {
+          missingSkills: { type: "array", items: { type: "string" }, description: "Privacy-bounded skill labels from a local match." },
+          targetRoles: { type: "array", items: { type: "string" }, description: "Optional role direction labels." },
+        },
+        output: {
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { status: STATUS, plan: { type: "json" }, message: { type: "string" } },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (knowledgeGrowth === undefined) return { status: "source_unavailable" as const, message: "knowledge_growth_unavailable" };
+          try {
+            const input = {
+              ...(args.missingSkills === undefined ? {} : { missingSkills: args.missingSkills }),
+              ...(args.targetRoles === undefined ? {} : { targetRoles: args.targetRoles }),
+            };
+            return { status: "ok" as const, plan: await knowledgeGrowth.preview(input) as unknown as JsonValue };
+          } catch (error: unknown) {
+            return { status: "source_unavailable" as const, message: stableError(error) };
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
         name: "boss_watch_discover_jobs",
         description:
           "Read visible BOSS job cards from the current page. Read-only; never clicks, navigates, sends, or applies.",
@@ -1411,6 +1443,50 @@ export function registerBossWatchTools(
               ...(typeof args.maxJobs === "number" ? { maxJobs: args.maxJobs } : {}),
             });
             return { status: "ok" as const, ...preview, constraints: [...preview.constraints] };
+          } catch (error: unknown) {
+            return { status: "invalid_request" as const, message: stableError(error) };
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_search_plan_preview",
+        description: "Build a read-only job-search plan from the saved local city and role preference. Does not call GankInterview, open BOSS, or write any source.",
+        parameters: {
+          city: { type: "string", description: "Optional explicit city override." },
+          keywords: { type: "array", items: { type: "string" }, description: "Optional explicit role directions." },
+        },
+        output: {
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { status: STATUS, plan: { type: "json" }, message: { type: "string" } },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (candidateProfile === undefined) return { status: "source_unavailable" as const, message: "candidate_profile_unavailable" };
+          try {
+            const saved = candidateProfile.getSearchPlanningValues();
+            const city = typeof args.city === "string" && args.city.trim().length > 0 ? args.city.trim() : saved?.preferredCity;
+            const explicit = Array.isArray(args.keywords) ? args.keywords : [];
+            const savedKeywords = saved?.positionKeywords?.split(/[、,，]/u).map(value => value.trim()).filter(Boolean) ?? [];
+            const keywords = [...new Set([...explicit, ...savedKeywords, "后端开发", "AI 应用开发", "Agent"])]
+              .map(value => value.trim()).filter(value => value.length > 0 && value.length <= 40).slice(0, 5);
+            return {
+              status: "ok" as const,
+              plan: {
+                city: city ?? null,
+                keywords,
+                sources: [
+                  { source: "gankinterview", action: "lead_search", limit: 10 },
+                  { source: "boss", action: "boss_search_preview_then_run", maxPages: 1, maxJobs: 5 },
+                ],
+                next: city === undefined ? "先设置意向城市，再执行来源搜索" : "先搜索 GankInterview，再由用户确认 BOSS 搜索计划",
+                readOnly: true,
+              } as unknown as JsonValue,
+            };
           } catch (error: unknown) {
             return { status: "invalid_request" as const, message: stableError(error) };
           }
@@ -3668,6 +3744,32 @@ export function registerBossWatchTools(
                 args.confirmed,
               )) as unknown as JsonValue,
             };
+          } catch (error: unknown) {
+            return feishuProjectionError(error);
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_feishu_reconcile_preview",
+        description: "Read-only compare of confirmed local application facts, saved Feishu projections, and current remote rows. Never writes or adopts remote status.",
+        parameters: {
+          targetId: { type: "string", required: true, description: "Local confirmed Feishu target id." },
+          applicationIds: { type: "array", items: { type: "string" }, description: "Optional local application ids; omitted means all local applications." },
+        },
+        output: {
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { status: FEISHU_PROJECTION_STATUS, preview: { type: "json" }, message: { type: "string" } },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (feishuProjection === undefined) return { status: "source_unavailable" as const, message: "feishu_projection_unavailable" };
+          try {
+            return { status: "ok" as const, preview: await feishuProjection.reconcilePreview(args.targetId, args.applicationIds) as unknown as JsonValue };
           } catch (error: unknown) {
             return feishuProjectionError(error);
           }

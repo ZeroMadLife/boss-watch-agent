@@ -258,6 +258,36 @@ test('does not project an agent event that forges the manual-confirmation payloa
   }
 })
 
+test('reconciles remote edits and missing rows without writing local projections', async () => {
+  const { service, client, store } = await setup('submitted')
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const sync = await service.syncPreview(target.targetId, ['application-test-1'])
+    await service.syncApply(sync.previewToken, true)
+    client.records = [{
+      recordId: 'rec-created-1',
+      fields: {
+        'fld-company': '示例公司',
+        'fld-role': '后端工程师',
+        'fld-url': 'https://careers.example.invalid/jobs/1',
+        'fld-status': '候选待评估',
+      },
+    }]
+    const preview = await service.reconcilePreview(target.targetId)
+    assert.equal(preview.readOnly, true)
+    assert.equal(preview.items[0]?.state, 'remote_ahead')
+    assert.equal(preview.items[0]?.diffs?.['fld-status']?.before, '候选待评估')
+    assert.equal(store.getProjection(target.targetId, 'application-test-1')?.lastResult, 'created')
+
+    client.records = []
+    const missing = await service.reconcilePreview(target.targetId, ['application-test-1'])
+    assert.equal(missing.items[0]?.state, 'missing_remote')
+  } finally {
+    store.close()
+  }
+})
+
 test('previews unchanged and update actions using a stable job URL', async () => {
   const { service, client, store } = await setup()
   try {

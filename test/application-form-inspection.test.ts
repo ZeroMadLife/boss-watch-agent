@@ -452,6 +452,62 @@ describe("official application form inspection", () => {
     ).resolves.toMatchObject({ status: "conflict", reason: "form_changed" });
     expect((dom.window.document.querySelector("#name") as HTMLInputElement).value).toBe("");
   });
+
+  it("aligns fill ordinals when a custom combobox contains a nested input (regression)", async () => {
+    const dom = new JSDOM(
+      `<!doctype html><title>虚构 ATS</title><form>
+      <div class="form-item"><label id="degree-label">最高学历</label>
+        <div role="combobox" aria-labelledby="degree-label" aria-controls="degrees">
+          <input type="text" name="degree_search"><span>请选择</span>
+        </div>
+      </div>
+      <div id="degrees" role="listbox"><button type="button" role="option" data-value="master">硕士研究生</button></div>
+      <div class="form-item"><label for="hometown">家庭所在城市</label><input id="hometown" name="hometown"></div>
+      <button type="button">下一步</button>
+      </form>`,
+      { url: officialUrl, runScripts: "outside-only" },
+    );
+    dom.window.document.querySelector('[role="option"]')?.addEventListener("click", (event) => {
+      const option = event.currentTarget as HTMLElement;
+      const combobox = dom.window.document.querySelector('[role="combobox"]');
+      if (combobox !== null) combobox.textContent = option.textContent;
+    });
+    const formController = controller(
+      runtime({
+        async evaluate(_targetId, expression) {
+          return dom.window.eval(expression) as unknown;
+        },
+      }),
+    );
+    const inspected = await formController.inspectApplicationForm(officialUrl);
+    if (inspected.status !== "ready") throw new Error("expected_ready_form");
+    expect(inspected.fields).toHaveLength(2);
+    const degree = inspected.fields[0];
+    const hometown = inspected.fields[1];
+    if (degree === undefined || hometown === undefined) throw new Error("missing_fixture_fields");
+    expect(degree.controlType).toBe("combobox");
+    expect(hometown.label).toBe("家庭所在城市");
+
+    const filled = await formController.fillApplicationForm({
+      expectedUrl: officialUrl,
+      expectedFormHash: inspected.page.formHash,
+      fields: [
+        { fieldId: degree.fieldId, value: "硕士" },
+        { fieldId: hometown.fieldId, value: "福州" },
+      ],
+    });
+
+    expect(filled).toMatchObject({
+      status: "filled",
+      filledCount: 2,
+      filledFieldIds: [degree.fieldId, hometown.fieldId],
+      requiresHumanReview: true,
+      submitted: false,
+      nextAction: "next_step_handoff",
+    });
+    expect(dom.window.document.querySelector('[role="combobox"]')?.textContent).toContain("硕士研究生");
+    expect((dom.window.document.querySelector("#hometown") as HTMLInputElement).value).toBe("福州");
+  });
 });
 
 import { createHash } from "node:crypto";

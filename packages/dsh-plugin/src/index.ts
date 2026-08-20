@@ -36,6 +36,7 @@ import { LocalApplicationStatusClient } from './application-status-client.js'
 import { registerBossWatchDashboardRoute } from './dashboard-route.js'
 import { registerBossWatchDashboardPageRoute } from './dashboard-page-route.js'
 import { LocalCandidateProfileService, SqliteCandidateProfileStore } from './candidate-profile.js'
+import { LocalKnowledgeGrowthService } from './knowledge-growth.js'
 
 export const name = 'boss-watch-dsh-plugin'
 export const inject = ['tools', 'skills']
@@ -83,6 +84,11 @@ export function apply(ctx: Context): void {
   const candidateProfile = candidateProfileStore === undefined
     ? undefined
     : new LocalCandidateProfileService({ store: candidateProfileStore })
+  const knowledgeGrowth = new LocalKnowledgeGrowthService(
+    process.env.BOSS_WATCH_OBSIDIAN_VAULT === undefined
+      ? {}
+      : { vaultRoot: process.env.BOSS_WATCH_OBSIDIAN_VAULT },
+  )
   const gateA = resumeMatchStore === undefined || gateAStore === undefined
     ? undefined
     : new LocalGateAService({ matches: resumeMatchStore, approvals: gateAStore })
@@ -211,6 +217,9 @@ export function apply(ctx: Context): void {
         const disposeApi = registerBossWatchDashboardRoute(webContext.webServer, {
           workspaceOverview,
           ...candidateBoard === undefined ? {} : { candidateBoard },
+          ...resumeStore === undefined ? {} : { resumeVersions: resumeStore },
+          ...resumeMatchStore === undefined ? {} : { resumeMatches: resumeMatchStore },
+          ...candidateProfile === undefined ? {} : { candidateProfile },
         })
         return () => {
           disposeApi()
@@ -222,7 +231,7 @@ export function apply(ctx: Context): void {
   })
   ctx.effect(
     () => {
-      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch, recruitmentSource, recruitmentSourceStore, resumeMatchStore, recruitmentJd, gateA, applicationStatusClient, candidateProfile)
+      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch, recruitmentSource, recruitmentSourceStore, resumeMatchStore, recruitmentJd, gateA, applicationStatusClient, candidateProfile, knowledgeGrowth)
       const disposeSkill = registerBossWatchSkill(ctx)
       return () => {
         disposeSkill()

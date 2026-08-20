@@ -15,6 +15,7 @@ export const BOSS_WATCH_SKILL = {
 - 用户询问今天要跟进什么时调用 \`boss_watch_follow_up_list\`；它每次合并本地提醒和最新 application 时间线，不代表 BOSS 或飞书主动推送。
 - 只有用户明确要求为某个已有 application 建立本地提醒时，才调用 \`boss_watch_follow_up_schedule\`。用户明确说明该提醒已处理后，调用 \`boss_watch_follow_up_complete\`；完成提醒不等于外部跟进、投递或面试已经成功。
 - 用户要求寻找校招岗位时调用 \`boss_watch_lead_search\`；它只在本次请求中读取配置的 GankInterview 校招接口，并把最小归一化快照及来源观察保存到本地，不代表后台持续同步。
+- 用户只说“开始找工作”或没有给出关键词时，先调用 \`boss_watch_search_plan_preview\` 读取本地偏好生成计划，再按用户确认执行来源搜索；不要猜测城市或直接打开 BOSS。
 - 用户直接粘贴“公司 + 招聘/内推链接 + 可选内推码”时，先调用 \`boss_watch_recruitment_source_preview\`。它只解析并哈希这段不可信文本，不打开链接、不创建 JobLead、不猜岗位或 JD。只有用户确认公司、HTTPS 链接、内推码和哈希后，才调用 \`boss_watch_recruitment_source_apply\` 写入本地来源收件箱；再用 \`boss_watch_recruitment_source_list/get\` 查看。来源处于 \`source_only\` 时必须引导用户在官网选择确切岗位并取得完整 JD，不能提前评分或准备投递。
 - 用户已为来源选择确切岗位并提供完整官网 JD 时，调用 \`boss_watch_recruitment_jd_preview\`。它只校验来源、公司、岗位、精确 HTTPS URL、JD 哈希/长度和可选城市/届别/招聘类型/截止信息，不访问网络、不写库、不返回 JD 原文。必须向用户展示这些字段并等待明确确认，之后才调用 \`boss_watch_recruitment_jd_apply\`；apply 将原文写入本地 Artifact、创建已人工核验的官网 JobLead，并把 \`leadId/applicationId/JD hash\` 绑定回来源。不得在同一步自动执行简历匹配、打开官网、填表或投递。
 - 用户提供腾讯文档官方导出的 CSV/XLSX 后，先调用 \`boss_watch_lead_import_preview\`；它只读取受控本地导入目录，展示字段映射和行统计，不访问腾讯文档、不写岗位事实。
@@ -49,6 +50,7 @@ export const BOSS_WATCH_SKILL = {
 - Watch 返回 \`paused_human_required\`、登录、验证码、风控或页面适配器失配时必须停止并交还人工；用户明确说明已处理 handoff 后，才调用 \`boss_watch_watch_resume\`，恢复本身不会自动 poll。
 - 用户在 BOSS 岗位列表、搜索结果或推荐页时，先调用 \`boss_watch_discover_jobs\` 读取可见岗位卡片；它不点击、不导航、不写库。
 - 用户明确给出 BOSS 关键词和城市、要求主动搜索时，先调用 \`boss_watch_boss_search_preview\`；它只生成最多 2 页/5 个岗位的固定计划。只有用户确认精确计划后，才调用 \`boss_watch_boss_search_run\`。执行按页去重、详情串行采集；登录、验证码、风控或浏览器断连立即 handoff，不自动重试。
+- 人岗匹配产生缺口后，可调用 \`boss_watch_growth_plan_preview\` 读取受控 Obsidian 知识索引；只返回文件名/标题和建议，不返回笔记正文，也不写入 Vault。
 - 用户明确要求查看或保存某个发现结果的完整 JD 时，调用 \`boss_watch_capture_discovered_job\`。只传上一条发现结果中的 \`discoveryId\` 和 \`externalJobId\`；工具只允许在临时页打开该岗位并写本地事实，完成后自动关闭。
 - 用户已经打开唯一岗位详情页时，可以直接调用 \`boss_watch_browser_status\` 和 \`boss_watch_capture_current_job\`。所有浏览器工具都不接受 target、任意 URL、CSS 或 JavaScript。
 - 用户已经打开 BOSS 的唯一聊天页、并明确把当前会话归属到某个已存在 application 时，调用 \`boss_watch_capture_current_conversation\`；它只读取当前选中会话最近一条招聘方可见消息，保存后返回事件/工件摘要。它不读取候选人自发消息、不回复、不点击、不发送；没有唯一聊天页、登录/验证码或页面适配失败时交还人工。

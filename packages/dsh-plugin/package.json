@@ -86,6 +86,7 @@
     "@deepseek-ai/dsh-skill": "link:../../../deepseek-harness/packages/skill/skill",
     "@deepseek-ai/dsh-system-prompt": "link:../../../deepseek-harness/packages/core/system-prompt",
     "@deepseek-ai/dsh-tools": "link:../../../deepseek-harness/packages/core/tools",
+    "lightningcss": "1.32.0",
     "react": "18.3.1",
     "tsdown": "0.22.2",
     "tsx": "4.19.0",

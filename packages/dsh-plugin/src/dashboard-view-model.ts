@@ -3,6 +3,7 @@ import type { CandidateBoardItem, CandidateBoardLatestMatch } from './candidate-
 export type DashboardView = 'jobs'
 export type DashboardSort = 'updated' | 'deadline' | 'match'
 export type DashboardMatchFilter = 'all' | CandidateBoardLatestMatch['matchLevel'] | 'pending'
+export type DashboardApplicationFilter = 'all' | 'not_applied' | 'submitted' | 'feishu_pending' | 'feishu_recorded'
 export type CompanyCategory = 'state_owned' | 'private_tech' | 'other' | 'unclassified'
 export type CompanyCategoryFilter = 'all' | 'state_owned' | 'private_tech' | 'other_or_unclassified'
 export type RoleDirection = 'agent' | 'backend' | 'ai_fullstack' | 'other' | 'unclassified'
@@ -15,6 +16,7 @@ export interface DashboardQueryState {
   readonly view: DashboardView
   readonly query: string
   readonly match: DashboardMatchFilter
+  readonly application: DashboardApplicationFilter
   readonly companyCategory: CompanyCategoryFilter
   readonly roleDirection: RoleDirectionFilter
   readonly sort: DashboardSort
@@ -34,6 +36,7 @@ export interface JobDisplayProfile {
 export interface JobBoardFilters {
   readonly query: string
   readonly match: DashboardMatchFilter
+  readonly application: DashboardApplicationFilter
   readonly companyCategory: CompanyCategoryFilter
   readonly roleDirection: RoleDirectionFilter
 }
@@ -41,6 +44,11 @@ export interface JobBoardFilters {
 export interface BatchSelectionAvailability {
   readonly selectable: boolean
   readonly reason: string
+}
+
+export interface ApplicationDisplayState {
+  readonly locallyConfirmed: boolean
+  readonly feishu: 'not_applicable' | 'not_configured' | 'pending' | 'recorded'
 }
 
 export type DashboardTaskSignal =
@@ -99,6 +107,7 @@ export function parseDashboardQuery(search: string): DashboardQueryState {
   const params = new URLSearchParams(search)
   const view = 'jobs'
   const match = isOneOf(params.get('match'), ['all', 'strong', 'moderate', 'weak', 'insufficient_evidence', 'pending'] as const) ?? 'all'
+  const application = isOneOf(params.get('application'), ['all', 'not_applied', 'submitted', 'feishu_pending', 'feishu_recorded'] as const) ?? 'all'
   const companyCategory = isOneOf(params.get('company'), ['all', 'state_owned', 'private_tech', 'other_or_unclassified'] as const) ?? 'all'
   const roleDirection = isOneOf(params.get('direction'), ['all', 'agent', 'backend', 'ai_fullstack', 'other_or_unclassified'] as const) ?? 'all'
   const sort = isOneOf(params.get('sort'), ['updated', 'deadline', 'match'] as const) ?? 'match'
@@ -114,6 +123,7 @@ export function parseDashboardQuery(search: string): DashboardQueryState {
     view,
     query,
     match,
+    application,
     companyCategory,
     roleDirection,
     sort,
@@ -129,6 +139,7 @@ export function serializeDashboardQuery(state: DashboardQueryState): string {
   params.set('view', state.view)
   if (state.query !== '') params.set('q', state.query)
   if (state.match !== 'all') params.set('match', state.match)
+  if (state.application !== 'all') params.set('application', state.application)
   if (state.companyCategory !== 'all') params.set('company', state.companyCategory)
   if (state.roleDirection !== 'all') params.set('direction', state.roleDirection)
   if (state.sort !== 'match') params.set('sort', state.sort)
@@ -169,6 +180,12 @@ export function filterJobBoard(
       || (filters.match === 'pending'
         ? matchLevel === undefined || matchLevel === 'insufficient_evidence'
         : matchLevel === filters.match)
+    const application = deriveApplicationDisplayState(candidate)
+    const matchesApplication = filters.application === 'all'
+      || (filters.application === 'not_applied' && !application.locallyConfirmed)
+      || (filters.application === 'submitted' && application.locallyConfirmed)
+      || (filters.application === 'feishu_pending' && application.feishu === 'pending')
+      || (filters.application === 'feishu_recorded' && application.feishu === 'recorded')
     const matchesCompany = filters.companyCategory === 'all'
       || (filters.companyCategory === 'other_or_unclassified'
         ? profile.companyCategory === 'other' || profile.companyCategory === 'unclassified'
@@ -177,8 +194,16 @@ export function filterJobBoard(
       || (filters.roleDirection === 'other_or_unclassified'
         ? profile.roleDirection === 'other' || profile.roleDirection === 'unclassified'
         : profile.roleDirection === filters.roleDirection)
-    return (query === '' || haystack.includes(query)) && matchesMatch && matchesCompany && matchesDirection
+    return (query === '' || haystack.includes(query)) && matchesMatch && matchesApplication && matchesCompany && matchesDirection
   })
+}
+
+/** Keep local status facts and Feishu projection state distinct in every view. */
+export function deriveApplicationDisplayState(candidate: CandidateBoardItem): ApplicationDisplayState {
+  if (candidate.confirmedStatus === undefined) return { locallyConfirmed: false, feishu: 'not_applicable' }
+  if (candidate.nextAction === 'sync_feishu') return { locallyConfirmed: true, feishu: 'pending' }
+  if ((candidate.feishuProjections?.length ?? 0) > 0) return { locallyConfirmed: true, feishu: 'recorded' }
+  return { locallyConfirmed: true, feishu: 'not_configured' }
 }
 
 /** Keep "add to pending applications" bounded to jobs that are ready for a local preparation draft. */

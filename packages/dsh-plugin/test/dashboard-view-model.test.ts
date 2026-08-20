@@ -4,6 +4,7 @@ import type { CandidateBoardItem } from '../src/candidate-board.ts'
 import {
   batchSelectionAvailability,
   classifySourceInbox,
+  deriveApplicationDisplayState,
   deriveJobDisplayProfile,
   deriveTodayTasks,
   filterJobBoard,
@@ -162,14 +163,14 @@ test('keeps an application with only a scheduled reminder in the tracking view',
 })
 
 test('round-trips user-facing board filters through URL query and rejects unsafe values', () => {
-  const parsed = parseDashboardQuery('?view=jobs&q=Agent&match=strong&company=state_owned&direction=agent&sort=match&page=3&selected=application%3Afixture&embedded=1')
+  const parsed = parseDashboardQuery('?view=jobs&q=Agent&match=strong&application=feishu_pending&company=state_owned&direction=agent&sort=match&page=3&selected=application%3Afixture&embedded=1')
   assert.deepEqual(parsed, {
-    view: 'jobs', query: 'Agent', match: 'strong', companyCategory: 'state_owned', roleDirection: 'agent', sort: 'match', page: 3,
+    view: 'jobs', query: 'Agent', match: 'strong', application: 'feishu_pending', companyCategory: 'state_owned', roleDirection: 'agent', sort: 'match', page: 3,
     selected: 'application:fixture', embedded: true,
   })
-  assert.equal(serializeDashboardQuery(parsed), '?view=jobs&q=Agent&match=strong&company=state_owned&direction=agent&page=3&selected=application%3Afixture&embedded=1')
-  assert.deepEqual(parseDashboardQuery('?view=today&match=perfect&company=guess&direction=magic&sort=salary&page=-1&selected=' + 'x'.repeat(300)), {
-    view: 'jobs', query: '', match: 'all', companyCategory: 'all', roleDirection: 'all', sort: 'match', page: 1, embedded: false,
+  assert.equal(serializeDashboardQuery(parsed), '?view=jobs&q=Agent&match=strong&application=feishu_pending&company=state_owned&direction=agent&page=3&selected=application%3Afixture&embedded=1')
+  assert.deepEqual(parseDashboardQuery('?view=today&match=perfect&application=guess&company=guess&direction=magic&sort=salary&page=-1&selected=' + 'x'.repeat(300)), {
+    view: 'jobs', query: '', match: 'all', application: 'all', companyCategory: 'all', roleDirection: 'all', sort: 'match', page: 1, embedded: false,
   })
   assert.equal(serializeDashboardQuery(parseDashboardQuery('')), '?view=jobs')
 })
@@ -272,14 +273,39 @@ test('filters the full company and job board without dropping unbound sources', 
   ]
 
   assert.deepEqual(filterJobBoard(candidates, {
-    query: '', match: 'all', companyCategory: 'all', roleDirection: 'all',
+    query: '', match: 'all', application: 'all', companyCategory: 'all', roleDirection: 'all',
   }).map(candidate => candidate.candidateId), ['source:unbound', 'application:backend'])
   assert.deepEqual(filterJobBoard(candidates, {
-    query: '上海', match: 'moderate', companyCategory: 'private_tech', roleDirection: 'backend',
+    query: '上海', match: 'moderate', application: 'all', companyCategory: 'private_tech', roleDirection: 'backend',
   }).map(candidate => candidate.candidateId), ['application:backend'])
   assert.deepEqual(filterJobBoard(candidates, {
-    query: '', match: 'pending', companyCategory: 'other_or_unclassified', roleDirection: 'other_or_unclassified',
+    query: '', match: 'pending', application: 'all', companyCategory: 'other_or_unclassified', roleDirection: 'other_or_unclassified',
   }).map(candidate => candidate.candidateId), ['source:unbound'])
+})
+
+test('filters local application facts separately from Feishu projection state', () => {
+  const notApplied = { ...baseCandidate, candidateId: 'application:not-applied' }
+  const pendingSync: CandidateBoardItem = {
+    ...baseCandidate, candidateId: 'application:pending-sync', recordKind: 'captured_job', confidence: 'captured_jd', jdStatus: 'complete',
+    confirmedStatus: 'submitted', nextAction: 'sync_feishu', nextTool: 'boss_watch_feishu_sync_preview',
+  }
+  const recorded: CandidateBoardItem = {
+    ...pendingSync, candidateId: 'application:recorded', nextAction: 'review_application_progress',
+    nextTool: 'boss_watch_application_overview',
+    feishuProjections: [{ targetId: 'target:fixture', projectedAt: '2026-08-19T04:00:00.000Z', lastResult: 'created' }],
+  }
+  assert.deepEqual(deriveApplicationDisplayState(notApplied), { locallyConfirmed: false, feishu: 'not_applicable' })
+  assert.deepEqual(deriveApplicationDisplayState(pendingSync), { locallyConfirmed: true, feishu: 'pending' })
+  assert.deepEqual(deriveApplicationDisplayState(recorded), { locallyConfirmed: true, feishu: 'recorded' })
+
+  const filter = (application: 'not_applied' | 'submitted' | 'feishu_pending' | 'feishu_recorded') => filterJobBoard(
+    [notApplied, pendingSync, recorded],
+    { query: '', match: 'all', application, companyCategory: 'all', roleDirection: 'all' },
+  ).map(candidate => candidate.candidateId)
+  assert.deepEqual(filter('not_applied'), ['application:not-applied'])
+  assert.deepEqual(filter('submitted'), ['application:pending-sync', 'application:recorded'])
+  assert.deepEqual(filter('feishu_pending'), ['application:pending-sync'])
+  assert.deepEqual(filter('feishu_recorded'), ['application:recorded'])
 })
 
 test('allows batch selection only after JD, match, worth-it confirmation, and a verified application entry are ready', () => {

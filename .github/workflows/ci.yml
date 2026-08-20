@@ -26,7 +26,7 @@ jobs:
   dsh-plugin:
     runs-on: ubuntu-latest
     env:
-      DSH_COMMIT: 47f943859bef60e4160492346772ded9b24f765a
+      DSH_COMMIT: 141eb6fef83422698aef7a981029e843e8161534
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

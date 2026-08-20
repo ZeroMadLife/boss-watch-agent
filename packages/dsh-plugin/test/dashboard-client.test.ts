@@ -82,6 +82,15 @@ const snapshot = {
       toolName: 'boss_watch_resume_match',
     }],
   },
+  resumeCenter: {
+    versions: [{
+      resumeVersionId: 'resume-version:fixture', current: true, mediaType: 'application/pdf', byteSize: 1024,
+      createdAt: '2026-08-19T03:00:00.000Z', parseStatus: 'not_yet_parsed_for_matching', matchedJobCount: 0,
+      matchedJobCountLimited: false,
+    }],
+    count: 1,
+    candidateProfile: { configured: false, availableFieldCount: 0, totalFieldCount: 5, valuesReturned: false },
+  },
   candidates: [candidate],
   count: 1,
 } as const
@@ -110,6 +119,26 @@ test('rejects malformed snapshots and cross-origin endpoint configuration', asyn
     fetchImpl: async () => new Response(JSON.stringify({ ...snapshot, count: 2 }), { status: 200 }),
   })
   await assert.rejects(() => client.load(), /dashboard_invalid_response/u)
+})
+
+test('accepts only privacy-bounded resume-center metadata', async () => {
+  const client = new BossWatchDashboardClient({
+    fetchImpl: async () => new Response(JSON.stringify(snapshot), { status: 200 }),
+  })
+  const loaded = await client.load()
+  assert.equal(loaded.resumeCenter.versions[0]?.current, true)
+  assert.equal(loaded.resumeCenter.candidateProfile.valuesReturned, false)
+
+  for (const resumeCenter of [
+    { ...snapshot.resumeCenter, count: 2 },
+    { ...snapshot.resumeCenter, versions: [{ ...snapshot.resumeCenter.versions[0], displayName: 'private-name.pdf' }] },
+    { ...snapshot.resumeCenter, candidateProfile: { ...snapshot.resumeCenter.candidateProfile, valuesReturned: true } },
+  ]) {
+    const invalid = new BossWatchDashboardClient({
+      fetchImpl: async () => new Response(JSON.stringify({ ...snapshot, resumeCenter }), { status: 200 }),
+    })
+    await assert.rejects(() => invalid.load(), /dashboard_invalid_response/u)
+  }
 })
 
 test('accepts an independent confirmedAt and privacy-bounded timeline', async () => {

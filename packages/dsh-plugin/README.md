@@ -18,6 +18,7 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_follow_up_schedule`：为已存在的 application 创建本地提醒，不执行外部动作；
 - `boss_watch_follow_up_complete`：关闭一条本地提醒，不代表外部跟进已经成功；
 - `boss_watch_lead_search`：只读查询 GankInterview 校招岗位并保存最小本地候选快照；不核验官网、不投递；
+- `boss_watch_search_plan_preview`：基于本地求职偏好生成 GankInterview/BOSS 的只读搜索计划；不访问外部来源；
 - `boss_watch_recruitment_source_preview` / `boss_watch_recruitment_source_apply`：预览并确认用户粘贴的公司、HTTPS 招聘链接和可选内推码；只写本地来源收件箱，不伪造岗位、不访问官网；
 - `boss_watch_recruitment_source_list` / `boss_watch_recruitment_source_get`：读取来源收件箱；`source_only` 仍需绑定确切岗位和完整 JD；
 - `boss_watch_recruitment_jd_preview` / `boss_watch_recruitment_jd_apply`：为已确认来源预览并绑定确切岗位、官网 URL 和完整 JD；preview 不写库且不回显 JD，apply 经明确确认后写本地 Artifact、创建 `human_confirmed` 官网 JobLead，并回写 `leadId/applicationId/JD hash`；
@@ -59,6 +60,8 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_interview_note_preview` / `boss_watch_interview_note_apply`：先预览用户手工输入的面经和哈希，明确确认后追加本地 interview_note Artifact/Event。
 - `boss_watch_progress_signal_preview` / `boss_watch_progress_signal_apply`：预览粘贴文本或受控 `.eml/.txt` 招聘通知，明确确认后追加本地进度证据和可选状态提议；不写飞书、不执行外部动作。
 - `boss_watch_application_status_preview` / `boss_watch_application_status_apply`：预览并确认用户主动陈述的已投递、笔试、面试、拒绝、Offer 或关闭事实；只追加本地 `status_change_confirmed`，不代表 Agent 执行了外部动作。
+- `boss_watch_feishu_reconcile_preview`：只读比较本地确认事实、已保存投影与飞书当前记录，返回 `in_sync/local_ahead/remote_ahead/conflict/missing_remote`；不采纳远端状态；
+- `boss_watch_growth_plan_preview`：只读受控 Obsidian Markdown 索引，结合匹配缺口生成学习建议；不返回笔记正文、不写 Vault。
 
 同时注册 `boss-watch-job-search` Skill，指导模型按需使用只读工具并在外部动作前停在审批。
 用户没有指定来源、只说“开始找工作”时，Skill 先调用 workspace overview，再让用户在 GankInterview、
@@ -115,7 +118,9 @@ observation 历史也不反向伪造部署前的来源读取记录。
 
 ## 本地开发
 
-本包使用业务仓旁边的本地 DSH checkout 进行类型检查和构建，`link:` 开发依赖只用于本地验证，`node_modules` 不应提交：
+本包使用业务仓旁边的本地 DSH checkout 进行类型检查，`link:` 开发依赖只用于本地验证，`node_modules` 不应提交。
+客户端构建采用仓内 `scripts/external-client-bundle.mjs`，不导入 DSH monorepo 私有 preset；当前 CI 固定兼容
+`dsh-v0.1.0-rc.8`（commit `141eb6fef83422698aef7a981029e843e8161534`）：
 
 ```bash
 export BOSS_WATCH_DIR=/path/to/boss-watch-agent

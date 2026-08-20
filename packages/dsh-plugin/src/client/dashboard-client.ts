@@ -166,8 +166,43 @@ function errorCode(value: unknown, status: number): string {
 function isDashboardSnapshot(value: unknown): value is BossWatchDashboardSnapshot {
   if (!isRecord(value) || value.status !== 'ok' || value.readOnly !== true) return false
   if (typeof value.generatedAt !== 'string' || !Number.isSafeInteger(value.count) || !Array.isArray(value.candidates)) return false
-  if (!isWorkspaceOverview(value.overview) || value.count !== value.candidates.length) return false
+  if (!isWorkspaceOverview(value.overview) || !isResumeCenter(value.resumeCenter) || value.count !== value.candidates.length) return false
   return value.candidates.every(isCandidate)
+}
+
+function isResumeCenter(value: unknown): value is BossWatchDashboardSnapshot['resumeCenter'] {
+  if (!isRecord(value) || !Array.isArray(value.versions) || !Number.isSafeInteger(value.count)) return false
+  if (value.count !== value.versions.length || !isDashboardCandidateProfile(value.candidateProfile)) return false
+  const currentCount = value.versions.filter(version => isRecord(version) && version.current === true).length
+  if (currentCount > 1) return false
+  return value.versions.every(version => isRecord(version)
+    && version.displayName === undefined
+    && version.localArtifactRef === undefined
+    && version.contentHash === undefined
+    && version.text === undefined
+    && typeof version.resumeVersionId === 'string'
+    && typeof version.current === 'boolean'
+    && typeof version.mediaType === 'string'
+    && Number.isSafeInteger(version.byteSize)
+    && Number(version.byteSize) > 0
+    && typeof version.createdAt === 'string'
+    && (version.parseStatus === 'parsed_for_matching' || version.parseStatus === 'not_yet_parsed_for_matching')
+    && Number.isSafeInteger(version.matchedJobCount)
+    && Number(version.matchedJobCount) >= 0
+    && typeof version.matchedJobCountLimited === 'boolean')
+}
+
+function isDashboardCandidateProfile(value: unknown): value is BossWatchDashboardSnapshot['resumeCenter']['candidateProfile'] {
+  return isRecord(value)
+    && value.values === undefined
+    && value.contentHash === undefined
+    && typeof value.configured === 'boolean'
+    && Number.isSafeInteger(value.availableFieldCount)
+    && Number(value.availableFieldCount) >= 0
+    && Number.isSafeInteger(value.totalFieldCount)
+    && Number(value.totalFieldCount) >= Number(value.availableFieldCount)
+    && value.valuesReturned === false
+    && optionalString(value.updatedAt)
 }
 
 function isWorkspaceOverview(value: unknown): value is WorkspaceOverview {
