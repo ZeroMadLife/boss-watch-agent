@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { CandidateBoardItem } from '../src/candidate-board.ts'
 import {
+  batchSelectionAvailability,
   classifySourceInbox,
   deriveJobDisplayProfile,
   deriveTodayTasks,
@@ -194,7 +195,7 @@ test('derives conservative versioned company, direction, and worth-applying labe
     worthApplying: recommended.worthApplying,
   }, { companyCategory: 'state_owned', roleDirection: 'agent', worthApplying: 'recommended' })
   assert.equal(recommended.ruleVersion, JOB_BOARD_RULESET_VERSION)
-  assert.match(recommended.reason, /88/u)
+  assert.equal(recommended.reason, '88 分，匹配度高，可以优先考虑')
 
   const unclassified = deriveJobDisplayProfile({ ...baseCandidate, company: '虚构未标注组织', role: '工程师' })
   assert.equal(unclassified.companyCategory, 'unclassified')
@@ -211,6 +212,36 @@ test('derives conservative versioned company, direction, and worth-applying labe
     },
   })
   assert.equal(conflicting.roleDirection, 'unclassified')
+
+  const moderate = deriveJobDisplayProfile({
+    ...baseCandidate,
+    candidateId: 'application:moderate',
+    recordKind: 'captured_job',
+    confidence: 'captured_jd',
+    jdStatus: 'complete',
+    latestMatch: {
+      matchId: 'match:moderate', score: 64, matchLevel: 'moderate', strategyVersion: 'local-evidence-match-v3',
+      createdAt: '2026-08-19T03:00:00.000Z', resumeVersionId: 'resume:fixture', matchedSkills: [],
+      missingSkills: ['SQL'], matchedCapabilities: [], missingCapabilities: [],
+    },
+  })
+  assert.equal(moderate.worthApplying, 'review')
+  assert.equal(moderate.reason, '64 分，匹配度中等，先查看缺口')
+
+  const weak = deriveJobDisplayProfile({
+    ...baseCandidate,
+    candidateId: 'application:weak',
+    recordKind: 'captured_job',
+    confidence: 'captured_jd',
+    jdStatus: 'complete',
+    latestMatch: {
+      matchId: 'match:weak', score: 31, matchLevel: 'weak', strategyVersion: 'local-evidence-match-v3',
+      createdAt: '2026-08-19T03:00:00.000Z', resumeVersionId: 'resume:fixture', matchedSkills: [],
+      missingSkills: [], matchedCapabilities: [], missingCapabilities: [],
+    },
+  })
+  assert.equal(weak.worthApplying, 'not_recommended')
+  assert.equal(weak.reason, '31 分，匹配度较低，暂不优先')
 })
 
 test('filters the full company and job board without dropping unbound sources', () => {
@@ -249,6 +280,38 @@ test('filters the full company and job board without dropping unbound sources', 
   assert.deepEqual(filterJobBoard(candidates, {
     query: '', match: 'pending', companyCategory: 'other_or_unclassified', roleDirection: 'other_or_unclassified',
   }).map(candidate => candidate.candidateId), ['source:unbound'])
+})
+
+test('allows batch selection only after JD, match, worth-it confirmation, and a verified application entry are ready', () => {
+  const ready: CandidateBoardItem = {
+    ...baseCandidate,
+    candidateId: 'application:ready-for-preparation',
+    recordKind: 'captured_job',
+    confidence: 'captured_jd',
+    jdStatus: 'complete',
+    officialApplyUrl: 'https://careers.example.invalid/jobs/ready',
+    nextAction: 'prepare_application',
+    nextTool: 'boss_watch_apply_preview',
+    latestMatch: {
+      matchId: 'match:ready', score: 86, matchLevel: 'strong', strategyVersion: 'local-evidence-match-v3',
+      createdAt: '2026-08-19T03:00:00.000Z', resumeVersionId: 'resume:fixture', matchedSkills: ['Java'],
+      missingSkills: [], matchedCapabilities: ['Backend Engineering'], missingCapabilities: [],
+    },
+    gateA: {
+      gateAId: 'gate-a:ready', matchId: 'match:ready', approvedAt: '2026-08-19T04:00:00.000Z',
+      decision: 'proceed', externalAction: 'not_authorized',
+    },
+  }
+
+  assert.deepEqual(batchSelectionAvailability(ready), { selectable: true, reason: '可以加入待投递' })
+  assert.deepEqual(batchSelectionAvailability({ ...ready, jdStatus: 'verified_summary' }), { selectable: false, reason: '缺完整 JD' })
+  assert.deepEqual(batchSelectionAvailability({ ...ready, latestMatch: undefined }), { selectable: false, reason: '待完成匹配' })
+  assert.deepEqual(batchSelectionAvailability({ ...ready, gateA: undefined }), { selectable: false, reason: '待确认值得投' })
+  assert.deepEqual(batchSelectionAvailability({ ...ready, officialApplyUrl: undefined }), { selectable: false, reason: '缺投递入口' })
+  assert.deepEqual(batchSelectionAvailability({ ...ready, nextAction: 'sync_feishu', confirmedStatus: 'submitted' }), {
+    selectable: false,
+    reason: '已有投递进度',
+  })
 })
 
 test('keeps facts, recommendations, pending confirmation, and confirmed status visually distinct', () => {

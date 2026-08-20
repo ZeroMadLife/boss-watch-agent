@@ -17,6 +17,7 @@ import { LocalJobWatchScheduler } from './job-watch-scheduler.js'
 import { LocalJobDescriptionDiffService } from './job-diff.js'
 import { LocalApplicationPreviewService } from './application-preview.js'
 import { LocalApplicationFormPreviewService } from './application-form-preview.js'
+import { LocalAtsAutofillProfileService, SqliteAtsAutofillProfileStore } from './ats-autofill-profile.js'
 import { LocalResumeImportService, SqliteResumeVersionStore } from './resume-version.js'
 import { LocalInterviewNoteClient } from './interview-note-client.js'
 import { LocalProgressSignalClient } from './progress-signal-client.js'
@@ -34,6 +35,7 @@ import { LocalGateAService, SqliteGateAStore } from './gate-a.js'
 import { LocalApplicationStatusClient } from './application-status-client.js'
 import { registerBossWatchDashboardRoute } from './dashboard-route.js'
 import { registerBossWatchDashboardPageRoute } from './dashboard-page-route.js'
+import { LocalCandidateProfileService, SqliteCandidateProfileStore } from './candidate-profile.js'
 
 export const name = 'boss-watch-dsh-plugin'
 export const inject = ['tools', 'skills']
@@ -77,6 +79,10 @@ export function apply(ctx: Context): void {
   const resumeStore = databaseReady ? new SqliteResumeVersionStore(databasePath) : undefined
   const resumeMatchStore = databaseReady ? new SqliteResumeMatchStore(databasePath) : undefined
   const gateAStore = databaseReady ? new SqliteGateAStore(databasePath) : undefined
+  const candidateProfileStore = databaseReady ? new SqliteCandidateProfileStore(databasePath) : undefined
+  const candidateProfile = candidateProfileStore === undefined
+    ? undefined
+    : new LocalCandidateProfileService({ store: candidateProfileStore })
   const gateA = resumeMatchStore === undefined || gateAStore === undefined
     ? undefined
     : new LocalGateAService({ matches: resumeMatchStore, approvals: gateAStore })
@@ -105,6 +111,12 @@ export function apply(ctx: Context): void {
   const resumeMatching = resumeImport === undefined
     ? undefined
     : new LocalResumeMatchingService({ source, resumes: resumeImport, ...resumeMatchStore === undefined ? {} : { store: resumeMatchStore } })
+  const atsAutofillProfileStore = databaseReady
+    ? new SqliteAtsAutofillProfileStore(databasePath)
+    : undefined
+  const atsAutofillProfiles = atsAutofillProfileStore === undefined || resumeImport === undefined
+    ? undefined
+    : new LocalAtsAutofillProfileService({ store: atsAutofillProfileStore, resumes: resumeImport })
   const applicationFormPreview = leadStore === undefined
     || resumeStore === undefined
     || resumeImport === undefined
@@ -117,7 +129,9 @@ export function apply(ctx: Context): void {
         approvals: gateAStore,
         recruitmentSources: recruitmentSourceStore,
         resumeImport,
+        ...atsAutofillProfiles === undefined ? {} : { atsProfiles: atsAutofillProfiles },
         browser,
+        ...candidateProfileStore === undefined ? {} : { candidateProfiles: candidateProfileStore },
       })
   const importService = leadStore === undefined
     ? undefined
@@ -208,7 +222,7 @@ export function apply(ctx: Context): void {
   })
   ctx.effect(
     () => {
-      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch, recruitmentSource, recruitmentSourceStore, resumeMatchStore, recruitmentJd, gateA, applicationStatusClient)
+      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch, recruitmentSource, recruitmentSourceStore, resumeMatchStore, recruitmentJd, gateA, applicationStatusClient, candidateProfile)
       const disposeSkill = registerBossWatchSkill(ctx)
       return () => {
         disposeSkill()
@@ -222,6 +236,8 @@ export function apply(ctx: Context): void {
         resumeStore?.close()
         resumeMatchStore?.close()
         gateAStore?.close()
+        candidateProfileStore?.close()
+        atsAutofillProfileStore?.close()
       }
     },
     'boss-watch-dsh-plugin.lifecycle()',
@@ -233,6 +249,7 @@ export { SqliteBatchApplicationStore } from './application-batch.js'
 export { SqliteFollowUpStore } from './application-follow-up.js'
 export { GankInterviewCampusAdapter, SqliteJobLeadStore } from './job-lead.js'
 export { LocalLeadSourceImportService } from './job-source-import.js'
+export { LocalCandidateProfileService, SqliteCandidateProfileStore } from './candidate-profile.js'
 export { LocalClipboardLeadSourceImportService } from './job-source-import.js'
 export { LocalVisualLeadImportService } from './visual-lead-import.js'
 export { LarkCliFeishuClient } from './feishu-client.js'
@@ -242,6 +259,7 @@ export { LocalJobWatchScheduler } from './job-watch-scheduler.js'
 export { LocalJobDescriptionDiffService } from './job-diff.js'
 export { LocalApplicationPreviewService } from './application-preview.js'
 export { LocalApplicationFormPreviewService } from './application-form-preview.js'
+export { LocalAtsAutofillProfileService, SqliteAtsAutofillProfileStore } from './ats-autofill-profile.js'
 export { LocalResumeImportService, SqliteResumeVersionStore } from './resume-version.js'
 export { LocalInterviewNoteClient } from './interview-note-client.js'
 export { LocalProgressSignalClient } from './progress-signal-client.js'

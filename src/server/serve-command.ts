@@ -31,7 +31,7 @@ export async function startServeCommand(
     runtimeMode: "baseline_ready",
     browserRuntime: testOptions.browserRuntime ?? new HttpBossHunterBrowserRuntime(),
     serviceToken,
-    dshWebOrigin: process.env.BOSS_WATCH_DSH_WEB_ORIGIN,
+    ...dshWebOriginOptions(process.env),
     resumeRoot: process.env.BOSS_WATCH_RESUME_DIR,
     progressSignalRoot: process.env.BOSS_WATCH_PROGRESS_SIGNAL_DIR,
   });
@@ -48,6 +48,22 @@ export async function startServeCommand(
     if (isAddressInUseError(error)) throw new Error(`port_in_use:${options.port}`);
     throw error;
   }
+}
+
+function dshWebOriginOptions(environment: NodeJS.ProcessEnv): {
+  dshWebOrigin?: string;
+  dshWebOrigins?: readonly string[];
+} {
+  if (environment.BOSS_WATCH_DSH_WEB_ORIGINS !== undefined) {
+    return {
+      dshWebOrigins: environment.BOSS_WATCH_DSH_WEB_ORIGINS.split(",")
+        .map((origin) => origin.trim())
+        .filter((origin) => origin.length > 0),
+    };
+  }
+  return environment.BOSS_WATCH_DSH_WEB_ORIGIN === undefined
+    ? {}
+    : { dshWebOrigin: environment.BOSS_WATCH_DSH_WEB_ORIGIN };
 }
 
 function parseServeCommand(arguments_: string[]): { port: number; dataDir: string } {

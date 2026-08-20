@@ -98,6 +98,19 @@ export class HttpBossHunterBrowserRuntime implements BossHunterBrowserRuntime {
     if (!response.ok) throw new Error("browser_close_failed");
   }
 
+  async setFiles(targetId: string, selector: string, files: readonly string[]): Promise<void> {
+    if (!/^input\[type=["']?file["']?\]$/iu.test(selector) || files.length !== 1) {
+      throw new Error("browser_file_upload_selector_invalid");
+    }
+    const response = await fetch(`${this.#baseUrl}/setFiles?target=${encodeURIComponent(targetId)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ selector, files }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) throw new Error("browser_file_upload_failed");
+  }
+
   async waitForLoad(targetId: string, timeoutMs = 15_000, signal?: AbortSignal): Promise<void> {
     const deadline = Date.now() + Math.max(0, timeoutMs);
     while (true) {

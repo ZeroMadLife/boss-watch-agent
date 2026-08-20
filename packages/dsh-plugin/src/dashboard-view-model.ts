@@ -38,6 +38,11 @@ export interface JobBoardFilters {
   readonly roleDirection: RoleDirectionFilter
 }
 
+export interface BatchSelectionAvailability {
+  readonly selectable: boolean
+  readonly reason: string
+}
+
 export type DashboardTaskSignal =
   | 'deadline_near'
   | 'source_binding'
@@ -174,6 +179,22 @@ export function filterJobBoard(
         : profile.roleDirection === filters.roleDirection)
     return (query === '' || haystack.includes(query)) && matchesMatch && matchesCompany && matchesDirection
   })
+}
+
+/** Keep "add to pending applications" bounded to jobs that are ready for a local preparation draft. */
+export function batchSelectionAvailability(candidate: CandidateBoardItem): BatchSelectionAvailability {
+  if (candidate.jdStatus !== 'complete') return { selectable: false, reason: '缺完整 JD' }
+  if (candidate.latestMatch === undefined || candidate.latestMatch.matchLevel === 'insufficient_evidence') {
+    return { selectable: false, reason: '待完成匹配' }
+  }
+  if (candidate.gateA === undefined || candidate.gateA.decision !== 'proceed') {
+    return { selectable: false, reason: '待确认值得投' }
+  }
+  if (candidate.nextAction !== 'prepare_application') {
+    return { selectable: false, reason: candidate.confirmedStatus === undefined ? '当前进度不可加入' : '已有投递进度' }
+  }
+  if (safeVerifiedUrl(candidate.officialApplyUrl) === undefined) return { selectable: false, reason: '缺投递入口' }
+  return { selectable: true, reason: '可以加入待投递' }
 }
 
 /** Build a scan-friendly action queue from fields already present in the dashboard contract. */
@@ -469,9 +490,9 @@ function classifyWorthApplying(candidate: CandidateBoardItem): { value: WorthApp
   if (match === undefined || match.matchLevel === 'insufficient_evidence') {
     return { value: 'pending', reason: '匹配证据不足，暂不能判断' }
   }
-  if (match.matchLevel === 'strong') return { value: 'recommended', reason: `${match.score} 分，高匹配，建议优先核对并投递` }
-  if (match.matchLevel === 'moderate') return { value: 'review', reason: `${match.score} 分，中等匹配，建议先复核缺口` }
-  return { value: 'not_recommended', reason: `${match.score} 分，当前匹配较弱` }
+  if (match.matchLevel === 'strong') return { value: 'recommended', reason: `${match.score} 分，匹配度高，可以优先考虑` }
+  if (match.matchLevel === 'moderate') return { value: 'review', reason: `${match.score} 分，匹配度中等，先查看缺口` }
+  return { value: 'not_recommended', reason: `${match.score} 分，匹配度较低，暂不优先` }
 }
 
 function containsAny(value: string, keywords: readonly string[]): boolean {

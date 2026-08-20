@@ -1,226 +1,208 @@
 # Boss Watch Agent
 
 [![CI](https://github.com/ZeroMadLife/boss-watch-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeroMadLife/boss-watch-agent/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-111827.svg)](LICENSE)
 
-这是一个以 DeepSeek Harness（DSH）为交互与 Agent Runtime、以本地事实账本为核心的求职盯盘 Agent。
+一个运行在本机、集成到 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的求职 Agent。
 
-DSH 通过独立插件调用受控 Browser Controller；Controller 复用 BossHunter CDP Runtime 连接用户已登录的
-Chrome，只允许检查浏览器状态和捕获当前唯一岗位详情页。迁移决策见 [DSH 采用决策](docs/dsh-adoption-decision.md)。
-原 Pi/Side Panel 路线继续保留，用于对话分析、页面适配器调试和故障回退。
+它把岗位收集、JD 归档、简历匹配、官网表单预填、投递记录和后续跟进放进同一条可审计流程。SQLite
+保存本地事实，DSH 负责对话和工作台；登录、验证码、风控提示与最终提交始终交给用户。
 
-当前版本已提供 DSH Web 工具、从零开始的本地 workspace overview、Browser Controller、Chrome Side Panel、岗位与招聘方消息只读捕获、面经和招聘进度信号 preview/apply 归档、SQLite
-证据日志、本地投递跟踪表、GankInterview 校招候选快照、腾讯 CSV/XLSX 本地导入、查看权限下的剪贴板快照导入、来源快照与观察历史、基于内容哈希的人工 URL/JD 核验、受控 ResumeVersion 目录、有序批次计划/checkpoint、JD Watch 本地状态机与显式单次观察/到期批次、只读 JD Diff、官网投递 Gate A 预览、规则分析和导出。它不会自动发送消息、投递简历、
-接受面试或处理验证码。
+> 当前是面向个人求职流程的早期版本，优先支持 macOS 本地开发与测试账号。它不是无人值守爬虫，也不会绕过招聘平台的安全机制。
 
-## Runtime 组合
-
-- DSH Web 是当前交互与 Agent Runtime，业务能力通过 `packages/dsh-plugin` 注入，不修改 DSH 上游源码。
-- Browser Controller、SQLite 和审批边界属于本仓库；DSH 只看到固定业务工具，不能获得任意 CDP/Playwright 权限。
-- `@earendil-works/pi-*` 保留为早期对话分析基线与回退实验，不是当前网页编排主链路。
-- 模型 Provider 与业务工具解耦；页面文本、模型输出和 Skill 文档都不能授予外部动作权限。
-
-## 当前执行链
+## 它解决什么
 
 ```text
-DSH Web -> boss-watch-dsh-plugin
-  -> authenticated localhost Browser Controller
-  -> BossHunter CDP Runtime -> logged-in Chrome
-  -> fixed BOSS Page Adapter + Guard
-  -> SHA-256 verified local artifact
-  -> append-only application event (JD / message / interview note / progress signal)
-  -> one SQLite transaction
-  -> DSH facts / user-triggered JSON or Markdown export
+招聘信源 / BOSS 当前搜索页 / 用户粘贴的内推链接
+                         ↓
+              候选岗位池与完整 JD
+                         ↓
+             本地简历匹配与投递决策
+                         ↓
+          官网 ATS 预填或 BOSS 沟通准备
+                         ↓
+              用户检查并完成最终提交
+                         ↓
+       SQLite 工作台 → 飞书多维表格 → 跟进提醒
 ```
 
-## 安全边界
+日常使用不需要记工具名。可以直接在 DSH 中说：
 
-| 能力 | 当前策略 |
-| --- | --- |
-| 捕获对话 | 只读，可自动执行 |
-| 消息分类 | 只读，可自动执行 |
-| 回复草稿 | 只生成草稿，可自动执行 |
-| 发送消息 | 必须人工审批，尚未实现 |
-| 发送简历 | 必须人工审批，尚未实现 |
-| 接受面试 | 必须人工审批，尚未实现 |
-| 登录、验证码、风控 | 始终由人工处理 |
+- “开始找工作，先看今天最值得处理的岗位。”
+- “这是安克创新的内推链接和内推码，先保存来源。”
+- “搜索上海的 Agent 校招岗位，最多看 5 个。”
+- “用最新版简历评估这个 JD，值得投就加入待投递。”
+- “官网已经打开，填当前页。”
+- “这家公司今天通知笔试了，记录并同步飞书。”
 
-审批必须绑定 `sessionId + conversationId + recipientId + contentHash + expiresAt`。消息内容或接收人发生变化后，原审批立即失效。
+## 当前能力
 
-## 本地运行
+| 环节 | 已实现 | 边界 |
+| --- | --- | --- |
+| 招聘信源 | GankInterview 请求时搜索；CSV/XLSX、剪贴板、截图和手工内推链接导入 | 不后台抓取私有文档，不把来源摘要冒充完整 JD |
+| BOSS 岗位 | 读取当前搜索/推荐页，低频串行打开详情并保存 JD | 依赖用户已登录的浏览器；遇验证或风控立即停止 |
+| 岗位工作台 | 岗位筛选、匹配证据、待办、进度、分页和批量加入待投递 | 工作台展示事实与建议，不自动执行外部动作 |
+| 简历 | 导入 PDF/DOCX/Markdown/TXT，保存不可变版本并在本机解析 | 原文不写入 DSH Transcript，不上传外部模型 |
+| 人岗匹配 | 本地规则生成技能、经历、届别、地点偏好和缺口证据 | 分数是决策辅助，不是录用概率 |
+| 官网 ATS | 用户打开已核验页面后，一次填写文本、下拉并上传绑定简历 | 多页表单逐页继续；协议、验证码和最终提交由用户完成 |
+| 投递跟踪 | SQLite 追加式时间线、状态确认、跟进提醒 | 不从官网匿名推断“通过/淘汰” |
+| 飞书同步 | 预览后幂等写入多维表格 | 本地事实为主，外部写入需要明确确认 |
 
-要求 Node.js `>=22.19.0`。
+完整工具契约和状态机见 [Job Search Agent Spec](docs/job-search-agent-spec.md)。
+
+## 为什么保留人工接管
+
+招聘网站的登录态、验证码和风险控制不适合由 Agent 猜测处理。Boss Watch 把自动化停在可检查的位置：
+
+1. 来源和 JD 先形成带哈希的本地事实。
+2. 简历匹配只批准进入材料准备，不等于授权投递。
+3. “填当前页”只授权当前 ATS 页的一次预填。
+4. 用户检查页面并点击最终提交。
+5. 投递、笔试、面试、Offer 等状态由用户确认后写入时间线。
+
+页面文本、模型回答和旧授权都不能自行扩大权限。
+
+## 架构
+
+```mermaid
+flowchart LR
+    U[用户] --> D[DSH Web + 求职工作台]
+    D --> P[Boss Watch DSH Plugin]
+    P --> C[本机 Controller :4318]
+    P --> S[(SQLite 事实库)]
+    C --> B[受控 Browser Runtime]
+    B --> W[BOSS / 招聘官网]
+    P --> F[飞书多维表格]
+```
+
+- `packages/dsh-plugin`：DSH 工具、求职 Skill、工作台和 ATS 流程。
+- `src/browser`：固定页面动作、风险检测与浏览器接管边界。
+- `src/server`：只监听 loopback 的 Controller 与短期上传会话。
+- SQLite：岗位、JD Artifact、简历版本、匹配、审批和进度的本地事实账本。
+- `deepseek-harness`：保持为独立的官方 clone，本仓库不复制或修改其上游源码。
+
+## 本地启动
+
+### 前置条件
+
+- macOS（当前主要验证环境）
+- Node.js `>=22.19.0`
+- Corepack
+- 一个独立的 `deepseek-harness` checkout，并按上游说明安装依赖
+- 如需 BOSS 读取：可用的 BossHunter Browser Runtime 和人工登录状态
+
+建议目录结构：
+
+```text
+~/workspace/
+  ├─ boss-watch-agent/
+  └─ deepseek-harness/
+```
+
+### 安装
 
 ```bash
+git clone git@github.com:ZeroMadLife/boss-watch-agent.git
+cd boss-watch-agent
 npm install
-npm test
-npm run check
+npm run dsh:plugin:install
 npm run build
+npm run dsh:plugin:build
+```
+
+把本地插件安装到 DSH 的 `web` profile：
+
+```bash
+export BOSS_WATCH_DIR=/absolute/path/to/boss-watch-agent
+export DSH_SOURCE_DIR=/absolute/path/to/deepseek-harness
+
+cd "$DSH_SOURCE_DIR"
+DSH_HOME="$HOME/Library/Application Support/BossWatchAgent/dsh" \
+  node --import tsx/esm apps/cli/src/bin.ts \
+  plugin --profile web add "$BOSS_WATCH_DIR/packages/dsh-plugin"
+```
+
+### 运行
+
+开两个终端：
+
+```bash
+# Terminal 1: 本机 Controller 与 SQLite
+cd "$BOSS_WATCH_DIR"
 npm run serve
 ```
 
-`npm run serve` 会自动创建仅供本机 DSH Host 使用的服务凭据：
-`$HOME/Library/Application Support/BossWatchAgent/dsh-service-token`。文件权限为 `0600`，内容不会打印到
-终端或进入 DSH 会话。Chrome 扩展仍使用独立配对机制，但 DSH 岗位捕获不需要配对码。
-
-本地 DSH Web 平台可以从独立的上游源码 checkout 启动。按文档安装
-`boss-watch-dsh-plugin` 后，除本地事实查询外，模型还可调用 `boss_watch_browser_status`、
-`boss_watch_capture_current_job` 和 `boss_watch_capture_current_conversation` 检查 Browser Runtime、保存当前唯一岗位详情页或选中会话中的最近招聘方消息；手工面经使用
-`boss_watch_interview_note_preview` -> `boss_watch_interview_note_apply` 归档：
-
 ```bash
+# Terminal 2: DSH Web
+cd "$BOSS_WATCH_DIR"
 npm run dsh:dev
 ```
 
-默认打开 `http://127.0.0.1:3080/`，可通过 `DSH_SOURCE_DIR` 和 `DSH_WEB_PORT` 切换源码路径与端口。模型调用前仍需要在 DSH 中配置可用模型。Browser Controller 不接受 target ID、URL、CSS 或 JavaScript，也不会点击、导航、填写或发送；多个岗位标签页、登录和验证码会停止并返回明确状态。详见
-[DSH 本地协同开发](docs/dsh-local-development.md)。
-
-在 DSH 中可直接说“查看本地投递跟踪表”，调用 `boss_watch_application_list`；它每次读取 SQLite 的最新
-事件并显示岗位进度、最近事件和待确认状态。说“搜索 Agent 校招岗位”时调用
-`boss_watch_lead_search`，结果先保存为 `source_only` 候选，不代表官网 JD 或已投递。
-每次搜索只进行一次请求时刷新，并将 `new/unchanged/changed` 写入本地来源观察历史；
-`boss_watch_lead_observation_list` 可以读取新增与变化，但不代表后台持续同步。腾讯文档有导出权限时先通过官方能力导出 CSV/XLSX；只有查看权限时，在页面选中可见表格区域并复制，再调用剪贴板预览和确认工具。
-用户查看候选保存的链接后，可以依次明确调用 `boss_watch_lead_url_confirm` 和
-`boss_watch_lead_jd_confirm`，把当前哈希的候选提升为 `url_verified`、`human_confirmed`。这两个工具只写本地
-核验事实，不打开网页；来源内容变化会撤销旧核验，自动页面核验仍未实现。
-
-如果已登录 BOSS 且希望从关键词/城市开始，可以说“预览 BOSS 搜索 Agent，上海”，再确认预览中的计划。
-插件会用 `boss_watch_boss_search_preview` -> `boss_watch_boss_search_run` 执行最多 2 页/5 个岗位的固定搜索，
-跨页按岗位 ID 去重，详情串行打开并在成功后关闭临时页。登录、验证码、风控或浏览器断连会返回 handoff，
-不会 stealth 抓取、自动重试或发送消息。GankInterview 仍适合做结构化来源候选，BOSS 搜索适合补充平台内最新可见岗位。
-
-### 从零开始
-
-新用户可以先在 DSH 中说“开始找工作”或“今天从哪里开始”。DSH 会调用只读工具
-`boss_watch_workspace_overview`，检查本地 Runtime、简历版本、岗位候选、已核验 JD、已捕获完整 JD 和
-Feishu 目标是否就绪，并返回当前阶段与下一步。它不会因此自动访问 GankInterview、遍历 BOSS、读取文件、
-上传简历或写入 Feishu。
-
-岗位来源按用户选择路由，一次只走一条：已配置 GankInterview 时做一次请求时搜索；用户已登录 BOSS 时读取
-当前可见列表；用户持有招聘汇总时导入 CSV/XLSX、剪贴板或当前视口截图。招聘汇总和 GankInterview 先生成
-`source_only` 候选；BOSS 列表摘要需要捕获当前详情页后才形成完整 JD。两条路径都不能用列表摘要直接评分或投递。
-
-腾讯文档岗位表有导出权限时，请先通过官方能力导出 CSV/XLSX，并放入本地导入目录：
+默认地址为 `http://127.0.0.1:3080/`，求职工作台位于 `/boss-watch/`。如果端口已占用，请明确换端口：
 
 ```bash
-mkdir -p "$HOME/Library/Application Support/BossWatchAgent/imports"
-cp ./27届秋招汇总.xlsx "$HOME/Library/Application Support/BossWatchAgent/imports/"
+DSH_WEB_PORT=3081 npm run dsh:dev
 ```
 
-然后在 DSH 中先说“预览腾讯表导入”，确认工作表、字段映射和行统计后再说“确认导入”。对应工具是
-`boss_watch_lead_import_preview` 和 `boss_watch_lead_import_apply`；它们只在本机解析和写入 SQLite，
-不会访问或写回腾讯文档。查询最近导入使用 `boss_watch_source_status`。
+重新构建业务代码后必须重启 `npm run serve`；不要在端口占用时直接结束来源不明的进程。完整配置、插件安装和
+Browser Runtime 启动方式见 [DSH 本地开发](docs/dsh-local-development.md) 与
+[测试账号试用手册](docs/test-account-quickstart.md)。
 
-只有查看权限时，在腾讯文档中选中要导入的可见行并按 `Cmd+C`，然后在 DSH 中说“预览我刚复制的腾讯表”。
-DSH 会调用 `boss_watch_lead_clipboard_preview`；确认来源和统计后再说“确认导入这次剪贴板快照”，调用
-`boss_watch_lead_clipboard_apply`。剪贴板变化会要求重新复制和预览，系统不会读取腾讯文档私有接口或把完整剪贴板写进会话。
+## 数据与隐私
 
-Canvas 页面无法复制时，可以把当前可见区域截图粘贴到 DSH。视觉子代理先输出结构化岗位行，随后
-`boss_watch_lead_visual_preview` 只做哈希、字段、重复和置信度检查；确认接受/拒绝数量后才调用
-`boss_watch_lead_visual_apply` 写本地快照。低置信度行不落库，成功写入的候选仍是 `source_only`，不代表官网核验或已投递。
+默认数据目录：
 
-要根据本地投递表安排跟进时，说“查看待跟进岗位”，调用 `boss_watch_follow_up_list`；它每次合并本地提醒
-和最新 application 事件。明确给出 application、提醒时间和原因后，使用
-`boss_watch_follow_up_schedule` 创建本地提醒；处理完后使用 `boss_watch_follow_up_complete` 关闭提醒。
-这些操作不会自动联系招聘方，也不代表外部跟进已经完成。
+```text
+~/Library/Application Support/BossWatchAgent/
+```
 
-招聘官网或 ATS 的权威状态通常需要登录，本项目不会尝试匿名绕过。用户可以粘贴招聘通知文本，或通过
-DSH 输入栏的回形针按钮导入 `.eml/.txt`，再调用 `boss_watch_progress_signal_preview`。本地固定规则只会
-提出 `interview`、`rejected`、`offer` 或 `needs_review`；确认 application、来源、内容哈希和提议后，才调用
-`boss_watch_progress_signal_apply` 追加本地证据。普通收件回执、取消、改期和冲突保持人工复核；没有新消息
-绝不自动推断为拒绝。飞书同步仍是独立的 preview/apply。
+其中包含 SQLite、内容寻址的简历工件和本机服务凭据。它们被排除在 Git 之外，不应复制到 Issue、日志或 DSH
+上游仓库。测试和文档只使用虚构或脱敏数据。
 
-对已经保存过完整 JD 的岗位，可以说“为这个 application 建立 JD 盯盘”，调用
-`boss_watch_watch_create`。它只登记本地 Watch，不立即打开页面；说“现在检查这个 Watch”时才会显式执行
-一次 `boss_watch_watch_poll`；如果用户明确要求检查全部到期 Watch，则调用一次 `boss_watch_watch_run_due`，单次最多 5 个。
-系统固定使用首次捕获的 BOSS 详情链接，Profile 串行、每天最多 20 次详情观察，内容变化/未变化/断连/登录或风控会分别记录状态。
-当前没有常驻后台 Scheduler，不会在 DSH 中自动循环，也不会绕过
-登录、验证码或平台风控；用户处理 handoff 后需明确调用 `boss_watch_watch_resume`。
-
-如果岗位已经产生两版本地 JD Artifact，可以说“看看这个 JD 改了什么”，调用
-`boss_watch_jd_diff`。它默认比较最近两个不同内容哈希，也可以指定工具已经返回的两个 hash；输出新增/删除段落和行号，
-不访问网页、不调用模型、不覆盖原始 Artifact。只有一版时返回 `jd_diff_baseline_missing`。
-
-已核验候选可以通过 `boss_watch_apply_batch_prepare` 生成有序本地计划，再用
-`boss_watch_apply_batch_status` 查看岗位级状态和 checkpoint。`boss_watch_apply_batch_resume` 只在用户处理完
-登录/验证码等 handoff 后清除旧授权并恢复等待确认，不会自动填写、重试或提交。
-
-DSH Web 输入栏提供独立的“导入简历”按钮，可直接选择 PDF、DOCX、Markdown 或 TXT；回形针按钮用于
-选择 `.eml/.txt` 招聘进度信号。按钮通过 4318
-本机短期上传会话把文件暂存到受控目录，并只把文件名、SHA-256 和预览请求追加到当前草稿；不会覆盖已有输入、
-自动发送或确认导入。用户检查后调用 `boss_watch_resume_import_preview`，再明确调用
-`boss_watch_resume_import_apply`；内容被复制为本机内容寻址工件，SQLite 和 DSH Transcript 只保留版本元数据。
-`boss_watch_resume_list/get` 不返回正文或绝对路径。DSH 原生聊天附件仍只接受 PNG/JPG/WebP/GIF，
-PDF/DOCX 由上述求职插件按钮处理；也可以手工把文件放到
-`$HOME/Library/Application Support/BossWatchAgent/resumes/` 作为备用路径。
-
-对已经通过 BOSS 捕获的完整 JD，可以使用 `boss_watch_resume_match` 指定一个
-`applicationId + resumeVersionId` 做本地匹配。插件只读取内容寻址简历工件，返回哈希、提取状态、技能命中/缺口、
-硬约束状态和可解释分数，不返回简历正文、不调用模型、不上传内容；结果仍停在 Gate A，不代表允许投递。
-
-准备官网投递时，先调用 `boss_watch_apply_preview`。它只接受当前内容哈希下已达到 `jd_verified` 或
-`human_confirmed` 的候选以及已登记的 `resumeVersionId`，展示固定 HTTPS 官网链接、简历版本元数据、已知字段和
-`form_schema_not_loaded` 缺失项，并返回 `requiresHuman=true`。这一步不打开官网、不读取简历、不填写表单、不发送或提交；
-用户手工打开该已核验官网/ATS 页面后，可以调用 `boss_watch_application_form_preview` 只读识别可见的标准
-`input`、`textarea` 和 `select`，并按“简历可提供、需用户补充、敏感、未知”给出脱敏分类。工具不接受任意 URL、
-target、CSS 或 JavaScript，不返回已有字段值或 URL query/hash；登录、验证码、风控、不同源或多个同源标签页均
-转为 handoff。字段填充、简历上传和最终提交仍未接入。
-
-`npm run serve` 默认只监听 `127.0.0.1:4318`，数据库位于
-`$HOME/Library/Application Support/BossWatchAgent/boss-watch.sqlite3`。当前未配置真实模型时，服务明确报告
-`baseline_ready`；不会把规则分析显示为 Pi。
-
-测试账号的完整安装和验收步骤见 [测试账号试用手册](docs/test-account-quickstart.md)。
-
-## 本地 SQLite 与导出
-
-Node 内置 `node:sqlite` 承载本地投递事件和原文工件。用户可以显式导出：
+可显式导出本地记录：
 
 ```bash
-npm run export -- --db "$HOME/Library/Application Support/BossWatchAgent/boss-watch.sqlite3" --out ./exports/applications.json --format json
-npm run export -- --db "$HOME/Library/Application Support/BossWatchAgent/boss-watch.sqlite3" --out ./exports/application.md --format markdown --application <application-id>
+npm run export -- \
+  --db "$HOME/Library/Application Support/BossWatchAgent/boss-watch.sqlite3" \
+  --out ./exports/applications.json \
+  --format json
 ```
 
-默认拒绝覆盖已有导出文件；确认覆盖时追加 `--force`。导出不会自动上传到飞书或其他服务。
+导出不会自动上传或覆盖已有文件。
+
+## 开发验证
+
+```bash
+npm test
+npm run check
+npm run build
+npm run dsh:plugin:test
+npm run dsh:plugin:check
+npm run dsh:plugin:build
+```
+
+CI 使用固定的 DSH commit 做兼容验证；本地跟随上游新版本不代表已经兼容。升级步骤见
+[DSH 插件架构](docs/dsh-plugin-architecture.md)。
+
+## 项目状态
+
+当前重点是打通个人用户的完整求职闭环，而不是扩大无人值守自动化：
+
+- 完善不同 ATS 的字段识别、多页续填和失败 handoff；
+- 提升岗位去重、完整 JD 获取与匹配解释；
+- 收敛工作台的信息密度和批量待投递体验；
+- 保持 BOSS 访问低频、可中断、可审计。
+
+问题反馈请附上脱敏后的错误码、页面类型和复现步骤，不要上传真实简历、Cookie、手机号或招聘聊天截图。
 
 ## 文档
 
-- [基础架构设计](docs/superpowers/specs/2026-08-14-boss-watch-agent-foundation-design.md)
-- [测试账号 Side Panel 设计](docs/superpowers/specs/2026-08-14-boss-watch-side-panel-test-account-design.md)
+- [产品与闭环规格](docs/job-search-agent-spec.md)
+- [DSH 本地开发](docs/dsh-local-development.md)
+- [插件架构与页面支持](docs/dsh-plugin-architecture.md)
+- [本地存储与飞书投影](docs/local-storage-and-export.md)
 - [测试账号试用手册](docs/test-account-quickstart.md)
-- [MVP 交付计划](docs/superpowers/plans/2026-08-14-boss-watch-agent-foundation-delivery.md)
-- [评测与上线门槛](docs/evaluation.md)
-- [DSH 采用决策](docs/dsh-adoption-decision.md)
-- [DSH 本地协同开发](docs/dsh-local-development.md)
-- [DSH 求职插件架构与页面支持矩阵](docs/dsh-plugin-architecture.md)
-- [Job Search Agent Spec](docs/job-search-agent-spec.md)
-- [Learn DSH with a Job Agent 学习博客方案](docs/learn-dsh-job-agent-outline.md)
-- [Tool Runtime 与业务事件边界](docs/tool-runtime.md)
-- [M3 JD Watch 交付计划](docs/superpowers/plans/2026-08-18-jd-watch-delivery.md)
-- [本地 SQLite、导出与飞书投影设计](docs/local-storage-and-export.md)
-- [真实账号与演示边界](docs/demo-account-boundary.md)
-- [BOSS 对话 Skill](skills/boss-conversation-watch/SKILL.md)
-- [安全报告](SECURITY.md)
-
-## 仓库关系
-
-```text
-earendil-works/pi
-  -> ZeroMadLife/pi                    # 现有 Pi 学习与通用实验 fork
-
-deepseek-ai/deepseek-harness
-  -> 本地源码学习 / 必要时上游 PR     # 不承载 BOSS 业务
-
-ZeroMadLife/boss-watch-agent           # BOSS 领域事实与安全边界
-  -> 当前 pinned @earendil-works/pi-* dependencies
-
-packages/dsh-plugin                    # 业务仓内的 DSH 插件包
-  -> 已接入本地投递跟踪、GankInterview 候选、腾讯表导入、人工 URL/JD 核验和 BOSS 浏览器工具
-  -> dsh.client 岗位面板尚未实现
-```
-
-除非发现必须修改 Agent Runtime 的通用问题，否则业务代码不进入 Pi 或 DSH fork。DSH 更新时先在官方 clone
-验证兼容性，稳定运行环境使用最后验证通过的 DSH commit。CI 当前固定验证
-`deepseek-harness@47f943859bef60e4160492346772ded9b24f765a`；升级该值前必须通过根项目和插件完整门槛。
+- [安全策略](SECURITY.md)
 
 ## License
 

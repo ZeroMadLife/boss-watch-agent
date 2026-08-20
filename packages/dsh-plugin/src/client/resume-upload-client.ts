@@ -6,6 +6,33 @@ export interface ResumeUploadFile {
   arrayBuffer(): Promise<ArrayBuffer>
 }
 
+export interface ResumeTransferItem {
+  readonly kind: string
+  getAsFile(): ResumeUploadFile | null
+}
+
+const SUPPORTED_RESUME_EXTENSION = /\.(?:pdf|docx|md|txt)$/iu
+
+export function selectPastedResumeFile(files: readonly ResumeUploadFile[]): ResumeUploadFile | undefined {
+  const supported = files.filter(file => SUPPORTED_RESUME_EXTENSION.test(file.name.trim()))
+  return supported.length === 1 ? supported[0] : undefined
+}
+
+/**
+ * Finder and browser clipboard implementations disagree on whether copied
+ * files appear in DataTransfer.files or only in DataTransfer.items.
+ */
+export function selectTransferredResumeFile(input: {
+  readonly files?: readonly ResumeUploadFile[]
+  readonly items?: readonly ResumeTransferItem[]
+}): ResumeUploadFile | undefined {
+  const itemFiles = (input.items ?? [])
+    .filter(item => item.kind === 'file')
+    .map(item => item.getAsFile())
+    .filter((file): file is ResumeUploadFile => file !== null)
+  return selectPastedResumeFile(itemFiles.length > 0 ? itemFiles : (input.files ?? []))
+}
+
 export interface ResumeUploadResult {
   readonly status: 'ok'
   readonly fileName: string

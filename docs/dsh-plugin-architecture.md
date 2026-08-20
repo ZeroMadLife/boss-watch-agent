@@ -91,7 +91,7 @@ Skill 通过 `ctx.skills.register()` 挂载；它不会自行执行工具，也�
 | 公司页、未知路径、非 BOSS 域名 | 不属于当前捕获契约 | `unsupported` |
 
 当前聊天适配器会排除 `.item-myself` 和 `.item-system`，避免把自己的消息或系统卡片当成招聘方消息。页面选择器回归覆盖了这两个真实类名。
-DSH 原生聊天附件当前只接受 PNG/JPG/WebP/GIF 图片；求职插件输入栏按钮可选择 PDF/DOCX/Markdown/TXT，通过 4318 本机短期会话暂存后生成 preview 草稿。面经走文本 preview/apply，不依赖原生附件。
+DSH 原生聊天附件当前只接受 PNG/JPG/WebP/GIF 图片；求职插件输入栏可用按钮选择或单文件粘贴/拖拽 PDF/DOCX/Markdown/TXT，通过 4318 本机短期会话暂存后生成 preview 草稿。面经走文本 preview/apply，不依赖原生附件。
 
 招聘官网或 ATS 的权威投递状态通常需要登录，本插件不尝试匿名绕过。邮件/通知信号只能作为待确认的
 本地证据；取消、改期、冲突和普通回执保持 `needs_review`，无消息不能推断为拒绝。

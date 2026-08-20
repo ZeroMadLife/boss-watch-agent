@@ -44,6 +44,7 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_resume_match_list`：读取按 JD/简历哈希/策略版本持久化的脱敏匹配历史；不返回简历或 JD 原文；
 - `boss_watch_gate_a_confirm`：把精确 match/JD/简历/策略快照保存为幂等 Gate A；只批准进入材料准备，不授权外部动作；
 - `boss_watch_apply_preview`：用已核验 `leadId + gateAId` 生成官网投递准备预览，简历版本固定来自 Gate A；不打开页面、不读取正文、不填表、不提交；
+- `boss_watch_application_form_autofill`：用户明确说“填当前页/继续填”后，一次扫描当前同源 ATS 页、批量填写确定性字段/下拉并上传 Gate A 简历；停在下一步或最终提交前，不回显个人值；
 - `boss_watch_application_form_preview`：只读检查用户已打开且与已核验 JobLead 同源的唯一官网/ATS 页面，脱敏分类标准表单字段；不导航、不填表、不上传、不提交；
 - `boss_watch_feishu_preview`：生成 Feishu 多维表格字段预览，不执行写入；
 - `boss_watch_feishu_target_preview`：解析用户提供的 Feishu Base/Wiki 链接，读取表结构并生成字段映射预览；
@@ -81,8 +82,8 @@ DSH 原生聊天附件目前只支持 PNG/JPG/WebP/GIF；插件在输入栏提�
 招聘官网/ATS 的权威状态通常仍需登录，邮件规则分类不能替代官网核验，也不会自动触发 Feishu 写入。人工状态确认后，看板可推荐生成 Feishu 同步预览；仍须再次明确确认才 apply。
 
 批量计划是本地状态模型：`queued -> awaiting_gate_b -> ready -> in_progress -> submitted_observed`，异常时进入
-`failed` 或 `handoff_required`。当前版本已实现计划、状态、恢复和官网/ATS 标准表单的只读脱敏预览；真正的
-Gate B 校验、Agent 侧填表审批入口、字段写入、简历上传和最终提交仍未接入；底层表单预览 service 的本地预填计划仅供后续受控切片使用。
+`failed` 或 `handoff_required`。当前版本已实现计划、状态、恢复、官网/ATS 标准表单的只读脱敏预览，以及由
+“填当前页”触发的一次性 Gate B：确定性字段、兼容下拉和唯一简历控件会在当前页批量处理。跨页继续、协议勾选和最终提交仍由用户操作。
 记录 Gate B 和开始岗位前都会重新核对批次保存的 `leadContentHash` 与当前候选快照；来源变化会返回
 `lead_content_changed` 并保持原岗位停在等待状态，不会复用旧核验。
 

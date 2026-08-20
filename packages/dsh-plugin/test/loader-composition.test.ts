@@ -16,7 +16,7 @@ import { SqliteJobLeadStore } from '../src/job-lead.ts'
 import { SqliteResumeVersionStore } from '../src/resume-version.ts'
 import { SqliteApplicationStore } from '../../../src/storage/sqlite-application-store.ts'
 
-test('registers read-only tools through a real Cordis Loader composition', async () => {
+test('registers bounded tools through a real Cordis Loader composition', async () => {
   const root = await mkdtemp(join(tmpdir(), 'boss-watch-dsh-loader-'))
   const configPath = join(root, 'cordis.yml')
   const previousDatabasePath = process.env.BOSS_WATCH_DB_PATH
@@ -55,6 +55,8 @@ test('registers read-only tools through a real Cordis Loader composition', async
     await context.loader.await()
 
     assert.deepEqual(context.tools.schemas().map(schema => schema.name).sort(), [
+      'boss_watch_application_form_autofill',
+      'boss_watch_application_form_fill_apply',
       'boss_watch_application_form_preview',
       'boss_watch_application_list',
       'boss_watch_application_overview',
@@ -69,6 +71,9 @@ test('registers read-only tools through a real Cordis Loader composition', async
       'boss_watch_boss_search_run',
       'boss_watch_browser_status',
       'boss_watch_candidate_board',
+      'boss_watch_candidate_profile_apply',
+      'boss_watch_candidate_profile_get',
+      'boss_watch_candidate_profile_preview',
       'boss_watch_capture_current_conversation',
       'boss_watch_capture_current_job',
       'boss_watch_capture_discovered_job',
@@ -141,8 +146,10 @@ test('registers read-only tools through a real Cordis Loader composition', async
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_batch_status/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_batch_resume/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_preview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_form_autofill/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /fill_current_page/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_form_preview/u)
-    assert.doesNotMatch((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_form_fill_apply/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_application_form_fill_apply/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_resume_import_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_resume_list/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_resume_match_list/u)

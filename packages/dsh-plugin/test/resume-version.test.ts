@@ -177,3 +177,36 @@ test('marks oversized extracted text as truncated instead of returning a strong-
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test('extracts each immutable resume once per process and shares concurrent readers', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-watch-resume-cache-'))
+  const store = new SqliteResumeVersionStore(':memory:')
+  let extractionCount = 0
+  const service = new LocalResumeImportService({
+    resumeRoot: root,
+    store,
+    async extractText() {
+      extractionCount += 1
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return '姓名：候选人甲\n专业技能：Java Python'
+    },
+  })
+  await writeFile(join(root, 'candidate.pdf'), 'fictional pdf bytes')
+
+  try {
+    const preview = await service.preview({ fileName: 'candidate.pdf' })
+    const imported = await service.apply(preview.previewToken)
+    const [first, second] = await Promise.all([
+      service.readText(imported.resumeVersion.resumeVersionId),
+      service.readText(imported.resumeVersion.resumeVersionId),
+    ])
+    const third = await service.readText(imported.resumeVersion.resumeVersionId)
+
+    assert.equal(extractionCount, 1)
+    assert.deepEqual(second, first)
+    assert.deepEqual(third, first)
+  } finally {
+    store.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})

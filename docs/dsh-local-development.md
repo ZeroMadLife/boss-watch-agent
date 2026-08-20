@@ -125,6 +125,7 @@ DSH_HOME="$HOME/Library/Application Support/BossWatchAgent/dsh" \
 | `boss_watch_resume_list/get` | 列出或读取简历版本元数据 | 无，不返回正文或绝对路径 |
 | `boss_watch_resume_match` | 用本地 ResumeVersion 与已捕获 BOSS JD 做可解释匹配 | 只读本地工件；不返回正文、不调用模型、不上传、不授权投递 |
 | `boss_watch_apply_preview` | 已核验候选与已登记 ResumeVersion 的官网投递前预览 | 只读本地元数据；不打开官网、不读取简历正文、不填表、不提交 |
+| `boss_watch_application_form_autofill` | 用户明确说“填当前页/继续填”后扫描当前 ATS 页，并一次填写确定性字段/下拉和上传 Gate A 简历 | 当前页一次性授权；个人值不进入结果，不勾选协议、不提交 |
 | `boss_watch_application_form_preview` | 检查用户已打开的已核验官网/ATS 标准表单，并按本地简历证据分类字段 | 只读页面与本地简历；现有值脱敏，不导航、不填表、不上传、不提交 |
 | `boss_watch_browser_status` | BossHunter Runtime、唯一 BOSS 岗位标签页和 Handoff 状态 | 无 |
 | `boss_watch_discover_jobs` | 当前 BOSS 列表/搜索/推荐页的可见岗位卡片 | 无 |
@@ -158,11 +159,11 @@ DSH_HOME="$HOME/Library/Application Support/BossWatchAgent/dsh" \
 覆盖。DSH 工具只接受目录内的文件名，不接受绝对路径。确认导入后，内容寻址工件位于该目录的
 `.artifacts/` 子目录；文件内容不会写入 SQLite 或工具结果。
 
-插件的 `dsh.client` 半部分会在输入栏增加“导入简历”按钮和招聘进度信号回形针按钮。简历按钮向 4318 本机 API 申请 10 分钟短期上传
+插件的 `dsh.client` 半部分会在输入栏增加“导入简历”按钮和招聘进度信号回形针按钮。PDF/DOCX/Markdown/TXT 既可用按钮选择，也可把单个文件直接粘贴或拖入 DSH 输入区。简历客户端向 4318 本机 API 申请 10 分钟短期上传
 会话，最多保留 32 个活跃会话，单文件上限 20 MiB、单会话最多 20 次上传尝试，只接受
 PDF/DOCX/Markdown/TXT；暂存完成后仅将绑定内容哈希的预览请求追加到 DSH 草稿，不覆盖已有输入，
 也不自动发送或 apply。默认只接受 `http://127.0.0.1:3080`，自定义 DSH 端口时同时设置
-`BOSS_WATCH_DSH_WEB_ORIGIN`；自定义 4318 地址可在页面启动前设置 `globalThis.__BOSS_WATCH_API_ORIGIN__`。
+`BOSS_WATCH_DSH_WEB_ORIGINS`（逗号分隔的精确本机 Origin）；兼容的单值变量是 `BOSS_WATCH_DSH_WEB_ORIGIN`。默认同时允许稳定版 `http://127.0.0.1:3080` 和 rc.8 验证版 `http://127.0.0.1:3081`，不使用通配符。自定义 4318 地址可在页面启动前设置 `globalThis.__BOSS_WATCH_API_ORIGIN__`。
 
 进度信号按钮只接受 `.eml/.txt`，单文件上限 2 MiB。招聘官网或 ATS 的权威状态通常仍需登录查询；
 邮件分类只是本地证据和待确认状态提议，不能证明官网当前状态。需要投影到 Feishu 时，仍要另走
@@ -178,7 +179,7 @@ PDF/DOCX/Markdown/TXT；暂存完成后仅将绑定内容哈希的预览请求�
 当前 `dsh.client` 已提供求职中心按钮和 `shell.overlay`，内嵌同源 `/boss-watch/` 工作台；岗位池、匹配、Gate A、
 人工确认进度、Feishu 投影和下一步也可继续通过 DSH 工具读取。简历导入使用独立输入栏按钮。已实现的浏览器能力包括岗位卡片发现、
 受控详情打开、状态检查、当前岗位读取、选中会话招聘方消息读取、显式单次 JD Watch 和一次性到期批次；Watch 尚无常驻后台 Scheduler。
-官网投递已支持哈希绑定 Gate A、`leadId + gateAId` 准备预览，以及对用户手工打开、与已核验链接同源的唯一官网/ATS 页做标准表单只读脱敏预览。底层 Controller/service 可生成受 session、Gate A 和 form hash 约束的本地批量预填计划，但当前 Agent 没有填表 Tool 或审批入口；敏感字段、登录、验证码、风控、字段写入、简历上传、隐私同意项、消息/简历投递和最终提交仍由用户处理。面经使用文本 preview/apply 归档；招聘进度支持文本信号提议和用户人工状态 preview/apply，两者不能混为最终事实。DSH 原生聊天附件仍只支持 PNG/JPG/WebP/GIF，简历按钮通过本机短期会话把 PDF/DOCX 暂存到受控目录。`boss_watch_resume_match` 会在插件本机完成文本提取和规则匹配，不依赖模型上传。
+官网投递已支持哈希绑定 Gate A、`leadId + gateAId` 准备预览，以及对用户手工打开、与已核验链接同源的唯一官网/ATS 页做标准表单脱敏预览。Agent 可先一次确认本地候选人偏好，再通过受 session、Gate A 和 form hash 约束的一次性 Tool 批量预填确定性字段，并向唯一可用文件控件上传 Gate A 绑定的简历；姓名、邮箱、手机号和微信只在本机使用，不进入工具结果。登录、验证码、风控、证件/健康/政治字段、隐私同意项、跨页继续、消息发送和最终提交仍由用户处理。面经使用文本 preview/apply 归档；招聘进度支持文本信号提议和用户人工状态 preview/apply，两者不能混为最终事实。DSH 原生聊天附件仍只支持 PNG/JPG/WebP/GIF；求职插件通过按钮、单文件粘贴或拖拽把 PDF/DOCX 暂存到受控目录。`boss_watch_resume_match` 会在插件本机完成文本提取和规则匹配，不依赖模型上传。
 
 跟进收件箱是请求时刷新，不是 BOSS 或飞书推送。提醒的完成只表示本地待办已处理，不改变追加式投递事实。
 

@@ -1,8 +1,8 @@
 # Job Search Agent Spec
 
-日期：2026-08-19
-版本：v0.36
-状态：在 v0.33 的 DSH 求职指挥台上补齐标准 ATS 表单的脱敏预览与底层本地预填原语。预填仅使用 Gate A 固定简历和同一表单哈希，但当前没有 Agent 侧填表 Tool 或一次性审批入口；登录/验证码/风控、字段写入、附件、隐私同意项和最终提交重新交还人工。完整追加式账本继续通过只读 `boss_watch_application_timeline` 查询，真实 ATS 验收与外部批量执行仍待完成
+日期：2026-08-20
+版本：v0.39
+状态：ATS 默认流程改为“一键填当前页”。Gate A 简历首次使用时只解析一次，结构化字段按精确 ResumeVersion/内容哈希保存在本地 SQLite；简历正文不入库、不进入 DSH。用户在已打开的核验官网直接说“填当前页/继续填”，`boss_watch_application_form_autofill` 在一次工具调用内扫描 DOM、映射确定性字段和下拉、上传绑定简历并停在下一步或最终提交前，不再展示逐字段计划或重复确认。旧 preview/apply 只作为审计模式保留。登录/验证码/风控、证件/健康/政治字段、隐私同意和最终提交继续交还人工；下一页重新绑定新的表单哈希。
 
 端到端闭环与 Feishu 单向投影的已确认设计见
 [`2026-08-18 求职 Agent 端到端闭环设计`](superpowers/specs/2026-08-18-job-search-closed-loop-design.md)。
@@ -414,11 +414,11 @@ DSH Web 原生聊天附件当前只覆盖下列图片媒体类型；求职插件
 | 输入 | DSH 聊天框 | 求职 Agent 处理路径 |
 | --- | --- | --- |
 | PNG/JPG/WebP/GIF | 支持 | 可交给视觉子代理做结构化预览；仍需用户核对后才写入事实 |
-| PDF/DOCX 简历 | 原生附件不支持；求职插件按钮支持选择 | 暂存到本地受控 `resumes/` 目录，再生成 `boss_watch_resume_import_preview` 草稿；仍需用户发送并明确确认 apply |
+| PDF/DOCX 简历 | 原生附件不支持；求职插件支持按钮选择、单文件粘贴和拖入输入区 | 暂存到本地受控 `resumes/` 目录，再生成 `boss_watch_resume_import_preview` 草稿；仍需用户发送并明确确认 apply |
 | Markdown/TXT 简历 | 原生附件不作为依赖；求职插件按钮支持选择 | 同上，匹配时在插件进程内读取 |
 | 面经文本 | 支持文本消息 | 走 `interview_note_preview/apply`，正文只在用户确认后进入本地事实账本 |
 
-因此，不能把 PDF/DOCX 当作 DSH 原生图片附件发送给模型；按钮只负责本机受控暂存和生成预览请求，
+因此，不能把 PDF/DOCX 当作 DSH 原生图片附件发送给模型；求职插件的按钮、粘贴和拖拽入口只负责本机受控暂存和生成预览请求，
 不把简历正文放进 Transcript、模型请求或 SQLite。聊天附件能力只影响图片视觉降级，不改变本地简历和事实账本的主链路。
 
 ## 4.5 按需一键启动
@@ -443,7 +443,9 @@ Launcher 不设置开机自启动；端口已有正确服务时复用，端口�
 
 - **岗位池**是默认视图，按公司/岗位展示全量岗位；每页 10 条，支持匹配度、公司类型（央国企/互联网/其他）、
   岗位方向（Agent 开发/后端/AI 全栈/其他）、进度和关键词筛选。未分类项进入“其他/待评估”，不根据公司名臆造事实。
-  用户优先看到“值得投/可考虑/暂不优先”、匹配分、截止时间、投递链接和进度；来源、核验、内部哈希等只在详情展开。
+  首屏概览可直接切换“全部岗位/值得投/可考虑/待评估”，复用并同步 `match` query，仍可与公司、方向和关键词组合；
+  零结果时在结果区提供“显示全部岗位”。用户优先看到“值得投/可考虑/暂不优先”、匹配分、截止时间、投递链接和进度；
+  来源、核验、内部哈希等只在详情展开。
 - **待处理**是岗位池中的一个筛选视图，不是新的内部对象；只根据 deadline、岗位信息完整度、最新脱敏匹配、Gate A、
   人工确认状态和 scheduled follow-up 派生。每项使用用户语言解释“为什么现在处理、下一步做什么”。
 - **岗位与筛选状态**保留分页、键盘选行和 URL query（`view/query/companyType/roleTrack/status/sort/page/selected`），
@@ -624,7 +626,7 @@ BOSS 唯一聊天页
 消息捕获不接受任意 URL、target、选择器或脚本；多个聊天标签页、登录、验证码、风控和页面结构失配都交还人工。
 面经 apply 不代表面试通过，也不改变外部平台状态。preview token 只绑定本次 application、面试 ID、阶段、原文哈希和过期时间，服务重启或过期后必须重新预览。
 
-DSH Web 原生聊天附件仍只覆盖 PNG/JPG/WebP/GIF 图片；`boss-watch-dsh-plugin` 的 `dsh.client` 半部分在输入栏增加简历选择按钮。按钮通过本机 4318 API 的短期上传会话把 PDF/DOCX/Markdown/TXT 暂存到受控目录，然后把文件名、显示名和内容哈希作为不可信元数据生成 `boss_watch_resume_import_preview` 请求，并追加到已有草稿；用户发送后仍按 preview/apply 规则确认。面经优先使用文本输入；图片形式的面试白板或截图可先交给视觉子代理提取，再由用户把核对后的文字作为面经 preview 输入，不能把视觉输出直接当作事实。
+DSH Web 原生聊天附件仍只覆盖 PNG/JPG/WebP/GIF 图片；`boss-watch-dsh-plugin` 的 `dsh.client` 半部分在输入栏增加简历选择按钮，并监听输入区内的单文件粘贴/拖拽。客户端通过本机 4318 API 的短期上传会话把 PDF/DOCX/Markdown/TXT 暂存到受控目录，然后把文件名、显示名和内容哈希作为不可信元数据生成 `boss_watch_resume_import_preview` 请求，并追加到已有草稿；用户发送后仍按 preview/apply 规则确认。面经优先使用文本输入；图片形式的面试白板或截图可先交给视觉子代理提取，再由用户把核对后的文字作为面经 preview 输入，不能把视觉输出直接当作事实。
 
 ### 5.6 免登录进度信号
 
@@ -686,7 +688,11 @@ DSH Web 原生聊天附件仍只覆盖 PNG/JPG/WebP/GIF 图片；`boss-watch-dsh
 | `boss_watch_gate_a_confirm` | 对精确 match/JD/简历/策略快照确认值得进入材料准备 | 写本地幂等 Gate A；`externalAction=not_authorized` |
 | `boss_watch_apply_preview` | 用 `leadId + gateAId` 生成官网投递准备预览，固定 Gate A 中的简历版本 | 只读本地事实；不打开页面、不读取简历正文、不填表、不发送、不提交 |
 | `boss_watch_resume_match` | 用指定 ResumeVersion 与已捕获 BOSS JD 做本地可解释匹配 | 只读本地 JD/简历工件；不返回正文、不调用模型、不上传、不授权投递 |
-| `boss_watch_application_form_preview` | 检查用户已打开的已核验官网/ATS 标准表单，并按本地简历证据分类字段 | 只读页面与本地简历；现有值脱敏，不导航、不填表、不上传、不提交 |
+| `boss_watch_candidate_profile_get` | 查看哪些可复用 ATS 偏好已配置 | 只返回字段名、哈希和时间，不返回实际值 |
+| `boss_watch_candidate_profile_preview/apply` | 预览并确认意向城市、到岗时间、微信、实习时长、职位关键词等本地偏好 | preview/apply 绑定当前 session 和 15 分钟 token；值只存本地 SQLite，不访问网页 |
+| `boss_watch_application_form_autofill` | 用户明确说“填当前页/继续填”后，一次完成当前 ATS 页的 DOM 扫描、确定性字段/下拉填写和 Gate A 简历上传 | 直接命令作为本页 Gate B；内部绑定 session/Gate A/JD/简历/官网/form hash/计划内容哈希/15 分钟有效期；不勾选协议、不点击最终提交 |
+| `boss_watch_application_form_preview` | 检查用户已打开的已核验官网/ATS 表单，并按固定简历、岗位和本地偏好分类字段，识别安全下拉、唯一简历上传控件和下一步/提交状态 | 只读页面与本地资料；现有值和待填值均不回显，不导航、不填表、不提交；输出必须包含公司与岗位 |
+| `boss_watch_application_form_fill_apply` | 在用户确认精确预览后一次性执行当前页确定性字段、精确下拉选择和 Gate A 简历上传 | 绑定 session/Gate A/JD/简历/官网来源/表单哈希/过期时间；不接受任意路径或 selector；不勾选协议、不点击下一步、不提交，返回 `next_step_handoff` 或 `review_before_submit` |
 | `boss_watch_watch_create` | 从已有本地 BOSS application 创建低频 JD Watch | 本地 SQLite 写入，不打开页面、不立即 poll |
 | `boss_watch_watch_list` | 读取已登记 Watch 的状态、预算计数和下次时间 | 只读，不启动后台调度 |
 | `boss_watch_watch_poll` | 对一个已到期 Watch 执行一次固定 URL 观察 | 读取一个详情页并写本地观察；受 Profile 锁、日预算和 handoff 约束 |
@@ -744,19 +750,29 @@ JD hash、resume hash 与策略身份；任一变化都失败关闭。输出包�
 `requiresHuman=true`。预览本身不访问网络、不启动浏览器、不写 SQLite；官网表单字段发现、辅助填充、最终提交
 和结果验证仍属于后续切片，不能把该工具包装成自动投递。
 
-`boss_watch_application_form_preview` 是 M6 的表单检查切片。它只接受已核验 `JobLead` 和已登记
+`boss_watch_application_form_autofill` 是 M6 的默认填写入口，`boss_watch_application_form_preview/fill_apply`
+是用户明确要求先审计时的兼容入口。它们只接受已核验 `JobLead` 和已登记
 `ResumeVersion`，工具参数不接受 URL、target、CSS 或 JavaScript。插件从本地 JobLead 取出固定
-`officialApplyUrl`，Controller 只在用户已经打开的同源唯一 HTTPS 页面运行固定表单适配器；不导航、不点击、
-不写 DOM。适配器只返回标准可见 input/textarea/select 的标签、类型、必填状态和“当前是否有值”，不返回
+`officialApplyUrl`，Controller 只在用户已经打开的同源唯一 HTTPS 页面运行固定表单适配器。检查阶段只返回标准
+可见 input/textarea/select/ARIA combobox 的标签、类型、必填状态和“当前是否有值”，不返回
 当前值；URL query/hash 也不进入 DSH 结果。插件在本机读取简历正文，只输出字段分类、来源可用性、哈希和
 计数，不输出姓名、手机号、邮箱或简历原文。页面不同源、多标签页、登录、验证码、风控或未知表单返回
- `handoff_required`。该预览始终为 `readOnly=true`、`externalAction=not_started`、`requiresGateB=true`，不代表
- 已经允许填写、上传或提交。
+`handoff_required`。审计预览始终为 `readOnly=true`、`externalAction=not_started`、`requiresGateB=true`。
 
-预填性能边界固定为“本地批量计划”：底层 service 在本机从 Gate A 固定的简历版本一次派生字段值，不逐字段调用模型，也不把
-个人资料值放入工具结果或 DSH Transcript；敏感字段即使在简历中存在也只进入人工复核，不进入批量写入计划。预览返回 `fillStrategy=local_batch_plan`、`modelCalls=0`，
-用于让用户知道这不是逐字段慢速交互。当前 Agent 不暴露 `boss_watch_application_form_fill_apply`，也没有 DSH `tools/pre-execute` 审批入口；字段写入、登录、验证码、风险控制、敏感字段、文件上传、单选/同意项、未知控件
-和提交按钮全部交还人工。后续若接入填表 Tool，必须重新定义 Gate B、Fresh Capture、审批拒绝和页面漂移测试，不能把内部原语直接当成产品能力。
+预填性能边界固定为“结构化一次、DOM 确定性批量填写”。`ats_autofill_profiles` 按精确
+`resumeVersionId + resumeContentHash` 保存姓名、联系方式、所在地、学校、专业、学历、毕业年份、明确提供的出生日期/性别和作品集等
+结构化值及证据标签；不保存 PDF/DOCX 正文。相同简历后续页面直接读取该档案，不再运行 `pdftotext`，并发首次请求
+合并为一次提取。候选人偏好仍通过 `candidate_profile` 单例保存。普通 ATS 不调用视觉模型；只有 Canvas、没有
+可访问 DOM 或异常控件无法适配时才进入视觉兜底评估。
+
+用户在当前会话直接说“填当前页/继续填”即授予动作 `fill_current_page`，只覆盖当前已打开表单的一次填写。
+`boss_watch_application_form_autofill` 内部生成并立即消费短期计划，绑定当前 DSH session、
+`leadId + gateAId + applicationId + JD hash + resumeVersionId + resume hash + official origin + form hash + 字段值哈希 + 15 分钟过期时间`。
+Controller 写入前重新比较 form hash。跨 session、绑定变化、页面变化或计划不一致失败关闭。默认工具结果只返回
+公司、岗位、完成数、未决数、上传状态和下一动作，不返回字段值或本地路径。审计模式的
+`boss_watch_application_form_fill_apply` 仍只接受 preview token 和显式 `confirmed=true`。
+
+填充 Tool 只写入确定性标准字段、可精确匹配的原生/ARIA 下拉，并只向唯一受控文件控件上传 Gate A 简历；响应固定保留 `manualReviewRequired=true` 和 `submitted=false`。登录、验证码、风险控制、证件/健康/政治字段、同意项、未知控件和最终提交全部交还人工。多页表单返回 `next_step_handoff`，用户点击“下一步/保存并继续”后只需再说“继续填”；最终页返回 `review_before_submit`。用户人工提交后，必须再通过 application status preview -> explicit apply 记录“已投递”，随后另行预览并确认 Feishu 同步；填充成功本身绝不产生已投递事实。
 
 简历版本由 `boss_watch_resume_import_preview/apply` 管理。预览和应用只允许受控简历目录中的 PDF、DOCX、
 Markdown 或 TXT；应用前会重新计算字节哈希，并把文件复制到内容寻址的本地工件目录。SQLite 只保存
@@ -838,7 +854,6 @@ DSH Skill 也不得根据岗位、城市或市场行情补全薪资。
 ### 6.4 尚未实现工具
 
 - `boss_watch_lead_validate`：只接受本地 `leadId`，打开该线索保存的 HTTPS 官网/ATS 链接并捕获当前 JD；
-- `boss_watch_apply_fill`：在用户批准具体字段后填充，停在最终 Submit 之前；
 - `boss_watch_apply_batch_execute`：仅消费批次中逐岗位有效的 Gate B，按顺序执行一次动作并在每项后验证；
 - 独立 action plugin：Fresh Capture -> Gate B -> 单一人工确认动作。
 
@@ -988,7 +1003,7 @@ JD Diff、搜索和模型摘要可选择派生文本，审计和来源核对始�
 - PDF/DOCX 提取不可用返回稳定错误，超过 200,000 字符标记 `text_truncated`，不得据此输出 strong；
 - 官网/ATS 表单预览只检查已核验链接同源的唯一已打开页面；不返回现有字段值或 URL query；登录、验证、风控、不同源、多标签页和未知表单失败关闭；
 - 表单字段只能输出简历可提供、需用户补充、敏感和未知四类脱敏结论，姓名、手机号、邮箱和简历原文不进入工具结果；
-- 当前没有 DSH 表单填写工具；底层预填原语只在进程内测试和受控 Controller 路径验证，不能被 Agent 直接调用；
+- DSH 默认用 `boss_watch_application_form_autofill` 一次完成当前页；同一简历结构化档案幂等复用，工具结果不暴露个人值；
 - `boss_watch_candidate_board` 对来源摘要、人工核验摘要和完整捕获 JD 使用不同 `jdStatus`；有简历时才把匹配/投递作为下一步，已有匹配时展示最新脱敏分数/证据；状态提议进入 review，人工确认状态在投影缺失或落后时进入 `sync_feishu`；不把状态提议当成已确认结果；
 - Gate A 绑定 match/application/JD hash/resume hash/策略版本并幂等持久化；`apply-preview-v2` 只接受同一显式来源绑定的 `leadId + gateAId`，事实变化后失败关闭；
 - application status preview/apply 只把用户确认的状态和时间追加为 `status_change_confirmed`；重复确认幂等，模型提议、超时和页面缺失不能生成最终状态；
@@ -997,7 +1012,7 @@ JD Diff、搜索和模型摘要可选择派生文本，审计和来源核对始�
 - `boss_watch_workspace_overview` 的 BOSS 搜索保护状态只读 Controller 进程内内存；搜索中、运行冷却、风险冷却和 Controller 不可用分别可观察，重启后不伪造恢复历史；
 - 招聘来源 JD preview 不写任何表且不回显 JD 原文；未知来源、不安全 URL、过期 token 和来源哈希变化分别稳定拒绝；
 - 招聘来源 JD apply 只在明确确认后创建一条 `official_portal` JD 事实、一个 `human_confirmed` 官网 JobLead 和来源绑定；相同预览重试幂等，返回的 `applicationId` 可直接用于本地简历匹配；
-- 求职指挥台默认进入“今日待办”，并以现有事实字段稳定派生截止临近、来源/JD 待核验、待匹配、待 Gate A、待人工投递、状态待确认、待同步飞书和 scheduled follow-up；今日列表每页 10 项，`view=today` 的合法页码可刷新恢复，非法或越界页码归一，切换视图从第 1 页开始；提醒备注不进入 snapshot，提醒到期不推断拒绝或已联系；
+- 求职指挥台默认进入全量岗位池；“全部岗位/值得投/可考虑/待评估”快速筛选与 `match` query 使用同一状态，可继续叠加公司、方向和关键词筛选。列表每页 10 项，合法页码可刷新恢复，非法或越界页码归一；提醒备注不进入 snapshot，提醒到期不推断拒绝或已联系；
 - 未绑定 `RecruitmentSource` 与 `source_only` JobLead 只进入来源收件箱，不混入岗位池；来源记录缺 role、exact URL 或完整 JD 时显式展示，不创建占位 JobLead；
 - 岗位池关键词、来源、状态、排序、页码和选择项写入 URL query；刷新、前进和后退后恢复，非法 query 回退到安全默认值；
 - 详情和投递跟踪使用不同视觉标签区分本地事实、Agent 建议和待人工确认；`proposedStatus` 不能显示为 `confirmedStatus`；
@@ -1043,15 +1058,15 @@ JD Diff、搜索和模型摘要可选择派生文本，审计和来源核对始�
 | M3 | JD Watch 目标、节流、停止和变化 diff | 本地 Watch 核心、显式单次 poll、一次性到期批次 Scheduler 和结构化 diff 已实现；真实账号验收未完成 |
 | M4 | 面经/招聘消息归档和学习博客联动 | 招聘消息只读捕获、面经 preview/apply 与时间线已整合；学习博客联动仍待整理 |
 | M5 | Feishu 链接接入、字段映射、预览到审批再到幂等投影 | 已实现人工确认状态/投递时间的单向投影与 `sync_feishu` 看板导航；测试 Base 已验证单条写入，真实多状态长期验收待完成 |
-| M6 | 官网表单预览、一次性审批预填、批量逐项 Gate B、Fresh Capture 与结果验证 | 哈希绑定 Gate A、`apply-preview-v2`、标准官网/ATS 表单只读脱敏预览和底层标准字段本机预填原语已实现；Agent 审批入口、真实 ATS 验收、上传、提交和结果验证未实现 |
+| M6 | 官网表单预览、一键填当前页、批量逐项 Gate B、Fresh Capture 与结果验证 | 哈希绑定 Gate A、按简历快照持久化 ATS 档案、标准/ARIA 控件扫描、确定性批量填写和受控简历上传已实现；最终提交与真实 ATS 扩展验收仍为人工边界 |
 | M7 | 按需 Launcher 与 DSH“求职中心” | 独立同源 `/boss-watch/` 工作台、左侧导航、岗位筛选/详情、来源和闭环状态展示已实现；岗位池与主页预览使用 10 条/页的本地分页，筛选后自动回到第 1 页；通过 DSH `shell.overlay` 集成到当前 Web 页面，仍可新页打开；独立 Launcher、真实岗位操作编排和自动外部执行仍未实现 |
 
 ## 12. 事实边界
 
-- **已实现**：从零开始的只读 workspace overview、本地采集 API、Controller 进程内 BOSS 搜索保护状态查询、统一岗位决策看板（公司/岗位、匹配度、公司类型和岗位方向筛选、投递入口、进度与详情）、粘贴招聘来源到确切官网 JD 的预览/确认绑定、`official_portal` JD Event/Artifact、SQLite 追加式事件、Application Tracker read model、人工状态 preview/apply、GankInterview `JobLead` 请求时快照与追加观察历史、腾讯 CSV/XLSX/剪贴板快照导入、DSH 截图视觉 preview/确认 apply、来源快照、受控 ResumeVersion 导入与内容寻址工件、DSH Web 简历选择按钮和本机短期上传会话、`local-evidence-match-v3` 脱敏摘要/能力匹配与 Gold/Badcase runner、`apply-preview-v2`、官网/ATS 标准表单只读脱敏预览、底层标准字段本机预填原语、批次本地计划/状态/checkpoint、Browser Controller、BOSS 岗位详情/选中会话招聘方消息观察、面经 preview/apply、Watch 本地状态机/预算/显式单次 poll/一次性到期批次、结构化 JD Diff、Feishu 目标/映射/确认状态单向投影、DSH 插件和导出。
+- **已实现**：从零开始的只读 workspace overview、本地采集 API、Controller 进程内 BOSS 搜索保护状态查询、统一岗位决策看板（公司/岗位、匹配度、公司类型和岗位方向筛选、投递入口、进度与详情）、粘贴招聘来源到确切官网 JD 的预览/确认绑定、`official_portal` JD Event/Artifact、SQLite 追加式事件、Application Tracker read model、人工状态 preview/apply、GankInterview `JobLead` 请求时快照与追加观察历史、腾讯 CSV/XLSX/剪贴板快照导入、DSH 截图视觉 preview/确认 apply、来源快照、受控 ResumeVersion 导入与内容寻址工件、DSH Web 简历选择按钮和本机短期上传会话、`local-evidence-match-v3` 脱敏摘要/能力匹配与 Gold/Badcase runner、`apply-preview-v2`、按简历快照持久化的 ATS Autofill Profile、标准/ARIA 表单扫描、当前页确定性批量填写和 Gate A 简历上传、批次本地计划/状态/checkpoint、Browser Controller、BOSS 岗位详情/选中会话招聘方消息观察、面经 preview/apply、Watch 本地状态机/预算/显式单次 poll/一次性到期批次、结构化 JD Diff、Feishu 目标/映射/确认状态单向投影、DSH 插件和导出。
 - **已验证**：fixture 中的无 Side Panel 捕获、幂等重试、服务身份、网页 Origin 拒绝、DSH Tool/Skill 组合和页面选择器；测试账号中的列表发现、指定岗位临时详情捕获、自动关页和幂等保存；DSH Web 中虚构 PDF 的选择、受控暂存、草稿生成和 `boss_watch_resume_import_preview` 调用；10 个虚构 Gold 场景和 7 个 Badcase 回归，包括描述性全栈 JD 与地点软偏好；Gate A 哈希绑定、`apply-preview-v2`、人工状态确认、状态提议隔离、确认状态/投递时间 Feishu 投影和 Loader 工具注册；GankInterview `/api/v1/campus` 的真实响应结构与只读 HTTP 适配 fixture；腾讯智能表两个公开只读岗位页的当前字段与链接形态；用户 Feishu 表的只读链接解析、字段读取、自动映射预览和单条记录回读；`lark-cli` 两种记录列表回执、无 `record_id` 写后唯一回查、Markdown URL 归一化及远端已有记录的 projection 恢复 fixture。
 - **持续验收**：BOSS 页面结构兼容性、字段混淆降级和 Watch 风险预算；一次测试账号通过不代表长期稳定。
-- **设计中**：独立 Launcher/独立侧栏（当前工作台已通过 DSH overlay 集成，独立页仍保留）、常驻 Watch 后台调度、自动官方页面核验、模型增强的简历语义抽取、批量投递外部执行、风险感知节流的跨进程版本、官网表单文件上传/提交和外部 Action；Feishu 反向同步与多条真实记录的长期验收。当前 Gold 只是 10 个虚构固定场景，扩大词表或模型边界前仍需增加经脱敏审查的真实分布样本。
+- **设计中**：独立 Launcher/独立侧栏（当前工作台已通过 DSH overlay 集成，独立页仍保留）、常驻 Watch 后台调度、自动官方页面核验、模型增强的简历语义抽取、批量投递外部执行、风险感知节流的跨进程版本、多页安全自动前进、最终提交和外部 Action；Feishu 反向同步与多条真实记录的长期验收。当前 Gold 只是 10 个虚构固定场景，扩大词表或模型边界前仍需增加经脱敏审查的真实分布样本。
 - **不可宣称**：生产级日处理量、P99/P50 SLA、平台长期稳定性、自动投递成功率。
 
 ## 13. GitHub 开源边界

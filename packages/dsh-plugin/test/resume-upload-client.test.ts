@@ -3,6 +3,8 @@ import test from 'node:test'
 import {
   buildResumeImportDraft,
   ResumeUploadClient,
+  selectPastedResumeFile,
+  selectTransferredResumeFile,
   type ResumeUploadFile,
   type ResumeUploadResult,
 } from '../src/client/resume-upload-client.ts'
@@ -100,4 +102,29 @@ test('appends an untrusted-metadata preview request without replacing the user d
   assert.match(request, /dsh-hash-resume\.pdf/u)
 
   assert.equal(buildResumeImportDraft('保留我的原草稿', result), `保留我的原草稿\n\n${request}`)
+})
+
+test('selects one supported pasted resume and ignores images or ambiguous files', () => {
+  const pdf = file('candidate.pdf')
+  const docx = file('candidate.docx')
+  assert.equal(selectPastedResumeFile([file('screenshot.png'), pdf]), pdf)
+  assert.equal(selectPastedResumeFile([docx]), docx)
+  assert.equal(selectPastedResumeFile([pdf, docx]), undefined)
+  assert.equal(selectPastedResumeFile([file('notes.exe')]), undefined)
+})
+
+test('reads Finder-style pasted resumes from transfer items when files is empty', () => {
+  const pdf = file('candidate.pdf')
+  assert.equal(selectTransferredResumeFile({
+    files: [],
+    items: [
+      { kind: 'string', getAsFile: () => null },
+      { kind: 'file', getAsFile: () => file('screenshot.png') },
+      { kind: 'file', getAsFile: () => pdf },
+    ],
+  }), pdf)
+  assert.equal(selectTransferredResumeFile({
+    files: [pdf],
+    items: [{ kind: 'string', getAsFile: () => null }],
+  }), pdf)
 })

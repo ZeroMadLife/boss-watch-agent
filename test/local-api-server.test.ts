@@ -7,6 +7,7 @@ import { createLocalApiServer } from "../src/server/local-api-server.js";
 const temporaryDirectories: string[] = [];
 const extensionOrigin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const dshOrigin = "http://127.0.0.1:3080";
+const dshRc8Origin = "http://127.0.0.1:3081";
 
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -259,6 +260,13 @@ describe("Boss Watch local API", () => {
       const session = (await sessionResponse.json()) as { token: string; maxBytes: number };
       expect(session.token).toMatch(/^[A-Za-z0-9_-]{20,}$/u);
       expect(session.maxBytes).toBe(20 * 1024 * 1024);
+
+      const rc8SessionResponse = await fetch(`${address.origin}/api/v1/resumes/upload-session`, {
+        method: "POST",
+        headers: { origin: dshRc8Origin },
+      });
+      expect(rc8SessionResponse.status).toBe(200);
+      expect(rc8SessionResponse.headers.get("access-control-allow-origin")).toBe(dshRc8Origin);
 
       const bytes = Buffer.from("%PDF-local-test");
       const uploaded = await fetch(`${address.origin}/api/v1/resumes/upload`, {

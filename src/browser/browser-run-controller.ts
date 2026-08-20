@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { lstat, readFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { relative, resolve } from "node:path";
 import { createPageRevision } from "../capture/page-snapshot.js";
 import type { CaptureResult } from "../server/capture-api.js";
 import {
@@ -34,6 +36,7 @@ export interface BossHunterBrowserRuntime {
   close(targetId: string): Promise<void>;
   waitForLoad?(targetId: string, timeoutMs?: number, signal?: AbortSignal): Promise<void>;
   scroll?(targetId: string, y: number): Promise<void>;
+  setFiles?(targetId: string, selector: string, files: readonly string[]): Promise<void>;
 }
 
 export interface BossHunterRuntimeHealth {
@@ -83,6 +86,7 @@ export type BrowserApplicationFormControlType =
   | "month"
   | "textarea"
   | "select"
+  | "combobox"
   | "checkbox"
   | "radio"
   | "file"
@@ -100,6 +104,7 @@ export interface BrowserApplicationFormField {
   readonly disabled: boolean;
   readonly readOnly: boolean;
   readonly currentState: "empty" | "present" | "checked" | "unchecked";
+  readonly options?: readonly { readonly label: string; readonly value?: string }[];
   readonly metadataTrust: "untrusted_page";
 }
 
@@ -155,6 +160,11 @@ export interface FillApplicationFormInput {
     readonly fieldId: string;
     readonly value: string;
   }[];
+  readonly resumeUpload?: {
+    readonly filePath: string;
+    readonly contentHash: string;
+    readonly fieldId: string;
+  };
 }
 
 export type FillApplicationFormResult =
@@ -174,6 +184,8 @@ export type FillApplicationFormResult =
       readonly filledCount: number;
       readonly requiresHumanReview: true;
       readonly submitted: false;
+      readonly uploadedResume: boolean;
+      readonly nextAction: "review_before_submit" | "next_step_handoff";
     };
 
 export type BrowserRunStatus =
@@ -334,6 +346,7 @@ export interface BossBrowserRunControllerOptions {
   readonly searchMinNavigationIntervalMs?: number;
   readonly searchRunCooldownMs?: number;
   readonly searchRiskCooldownMs?: number;
+  readonly allowedResumeRoot?: string;
 }
 
 interface ReadyJobInspection {
@@ -398,6 +411,7 @@ type ApplicationFormFillInspection =
       readonly status: "filled";
       readonly sourceUrl: string;
       readonly ordinals: readonly number[];
+      readonly nextAction: "review_before_submit" | "next_step_handoff";
     }
   | {
       readonly status: "human_required";
@@ -430,6 +444,7 @@ export class BossBrowserRunController {
   readonly #searchMinNavigationIntervalMs: number;
   readonly #searchRunCooldownMs: number;
   readonly #searchRiskCooldownMs: number;
+  readonly #allowedResumeRoot?: string;
   #searchInProgress = false;
   #lastSearchNavigationAt?: number;
   #searchNavigationCount = 0;
@@ -455,6 +470,8 @@ export class BossBrowserRunController {
       options.searchRiskCooldownMs,
       BOSS_SEARCH_RISK_COOLDOWN_MS,
     );
+    this.#allowedResumeRoot =
+      options.allowedResumeRoot === undefined ? undefined : resolve(options.allowedResumeRoot);
   }
 
   async discoverJobs(): Promise<BrowserJobDiscoveryResult> {
@@ -1020,7 +1037,7 @@ export class BossBrowserRunController {
   async fillApplicationForm(input: FillApplicationFormInput): Promise<FillApplicationFormResult> {
     if (
       !/^[a-f0-9]{64}$/u.test(input.expectedFormHash) ||
-      input.fields.length === 0 ||
+      (input.fields.length === 0 && input.resumeUpload === undefined) ||
       input.fields.length > 50 ||
       !uniqueFillFields(input.fields)
     ) {
@@ -1061,6 +1078,43 @@ export class BossBrowserRunController {
     });
     if (requested.some((field) => field === undefined)) {
       return { status: "conflict", reason: "field_state_changed", targetCount: 1 };
+    }
+    let uploadField: { fieldId: string; ordinal: number } | undefined;
+    if (input.resumeUpload !== undefined) {
+      const field = inspected.fields.find((candidate) => candidate.fieldId === input.resumeUpload?.fieldId);
+      if (
+        field === undefined ||
+        field.controlType !== "file" ||
+        inspected.fields.filter((candidate) => candidate.controlType === "file" && !candidate.disabled)
+          .length !== 1 ||
+        field.disabled ||
+        field.readOnly ||
+        field.currentState !== "empty"
+      ) {
+        return { status: "conflict", reason: "field_state_changed", targetCount: 1 };
+      }
+      if (!/^[a-f0-9]{64}$/u.test(input.resumeUpload.contentHash)) {
+        return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
+      }
+      try {
+        if (this.#allowedResumeRoot !== undefined) {
+          const resolvedFile = resolve(input.resumeUpload.filePath);
+          const pathFromRoot = relative(this.#allowedResumeRoot, resolvedFile);
+          if (pathFromRoot === "" || pathFromRoot.startsWith("..") || pathFromRoot.includes("\u0000")) {
+            return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
+          }
+        }
+        const info = await lstat(input.resumeUpload.filePath);
+        if (!info.isFile() || info.isSymbolicLink())
+          return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
+        const bytes = await readFile(input.resumeUpload.filePath);
+        if (createHash("sha256").update(bytes).digest("hex") !== input.resumeUpload.contentHash) {
+          return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
+        }
+      } catch {
+        return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
+      }
+      uploadField = { fieldId: field.fieldId, ordinal: field.ordinal };
     }
     let targets: BossHunterBrowserTarget[];
     try {
@@ -1108,6 +1162,19 @@ export class BossBrowserRunController {
     ) {
       return { status: "conflict", reason: "fill_plan_mismatch", targetCount: 1 };
     }
+    let uploadedResume = false;
+    if (uploadField !== undefined) {
+      if (typeof this.#runtime.setFiles !== "function")
+        return { status: "human_required", reason: "risk_control", targetCount: 1 };
+      try {
+        await this.#runtime.setFiles(selected.target.targetId, 'input[type="file"]', [
+          input.resumeUpload?.filePath as string,
+        ]);
+        uploadedResume = true;
+      } catch {
+        return { status: "environment_interrupted", reason: "browser_disconnected", targetCount: 0 };
+      }
+    }
     return {
       status: "filled",
       targetCount: 1,
@@ -1117,6 +1184,8 @@ export class BossBrowserRunController {
       filledCount: filledFieldIds.length,
       requiresHumanReview: true,
       submitted: false,
+      uploadedResume,
+      nextAction: filled.nextAction,
     };
   }
 
@@ -1386,6 +1455,7 @@ export const APPLICATION_FORM_INSPECTION_EXPRESSION = `(() => {
   const controlType = (element) => {
     if (element.tagName === 'TEXTAREA') return 'textarea';
     if (element.tagName === 'SELECT') return 'select';
+    if (element.matches('[role=combobox], [aria-haspopup=listbox]')) return 'combobox';
     const type = clean(element.getAttribute('type') || 'text', 32).toLowerCase();
     return ['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'checkbox', 'radio', 'file'].includes(type)
       ? type
@@ -1394,30 +1464,50 @@ export const APPLICATION_FORM_INSPECTION_EXPRESSION = `(() => {
   const state = (element, type) => {
     if (type === 'checkbox' || type === 'radio') return element.checked ? 'checked' : 'unchecked';
     if (type === 'file') return element.files && element.files.length > 0 ? 'present' : 'empty';
+    if (type === 'combobox') {
+      const value = clean(element.value || element.getAttribute('aria-valuetext') || element.textContent || '', 500);
+      return value && !/^(请选择|选择|please select|select)$/iu.test(value) ? 'present' : 'empty';
+    }
     return String(element.value || '').length > 0 ? 'present' : 'empty';
   };
-  const controls = Array.from(document.querySelectorAll('input, textarea, select'))
+  const isCustomSelect = (element) => element.matches('[role=combobox], [aria-haspopup=listbox]');
+  const rawControls = Array.from(document.querySelectorAll('input, textarea, select, [role=combobox], [aria-haspopup=listbox]'));
+  const controls = rawControls
     .filter((element) => {
       const type = clean(element.getAttribute('type') || 'text', 32).toLowerCase();
-      return isVisible(element) && !['hidden', 'submit', 'reset', 'button', 'image'].includes(type);
-    });
+      return isVisible(element) && (isCustomSelect(element) || !['hidden', 'submit', 'reset', 'button', 'image'].includes(type));
+    })
+    .filter((element, index, visibleControls) => !visibleControls.some((candidate, candidateIndex) =>
+      candidateIndex !== index && isCustomSelect(candidate) && candidate.contains(element)
+    ));
   if (controls.length === 0 || document.querySelector('form, [role=form]') === null) {
     return { status: 'page_adapter_mismatch' };
   }
   if (controls.length > ${MAX_APPLICATION_FORM_FIELDS}) return { status: 'page_adapter_mismatch' };
   const fields = controls.map((element, ordinal) => {
     const type = controlType(element);
+    const controlledListbox = element.getAttribute('aria-controls');
+    const optionRoot = controlledListbox ? document.getElementById(controlledListbox) : document.querySelector('[role=listbox]');
+    const options = type === 'select'
+      ? Array.from(element.options).slice(0, 100).map((option) => ({ label: clean(option.textContent, 120), value: clean(option.value, 120) }))
+      : type === 'combobox' && optionRoot && isVisible(optionRoot)
+        ? Array.from(optionRoot.querySelectorAll('[role=option]')).filter(isVisible).slice(0, 100).map((option) => ({
+            label: clean(option.textContent, 120),
+            value: clean(option.getAttribute('data-value') || option.getAttribute('value') || '', 120),
+          }))
+        : [];
     return {
       ordinal,
       controlType: type,
-      inputType: clean(element.getAttribute('type') || element.tagName.toLowerCase(), 32).toLowerCase(),
+      inputType: type === 'combobox' ? 'combobox' : clean(element.getAttribute('type') || element.tagName.toLowerCase(), 32).toLowerCase(),
       label: labelFor(element),
       name: clean(element.getAttribute('name') || '', 120),
       autocomplete: clean(element.getAttribute('autocomplete') || '', 80),
       required: element.required === true || element.getAttribute('aria-required') === 'true',
-      disabled: element.disabled === true,
-      readOnly: element.readOnly === true,
+      disabled: element.disabled === true || element.getAttribute('aria-disabled') === 'true',
+      readOnly: element.readOnly === true || element.getAttribute('aria-readonly') === 'true',
       currentState: state(element, type),
+      ...(options.length === 0 ? {} : { options }),
     };
   });
   return { status: 'ready', sourceUrl, title: clean(document.title), fields };
@@ -1469,34 +1559,45 @@ export function createApplicationFormFillExpression(fields: readonly Application
   const controlType = (element) => {
     if (element.tagName === 'TEXTAREA') return 'textarea';
     if (element.tagName === 'SELECT') return 'select';
+    if (element.matches('[role=combobox], [aria-haspopup=listbox]')) return 'combobox';
     const type = clean(element.getAttribute('type') || 'text', 32).toLowerCase();
     return ['text', 'email', 'tel', 'url', 'number', 'date', 'month', 'checkbox', 'radio', 'file'].includes(type)
       ? type
       : 'other';
   };
-  const controls = Array.from(document.querySelectorAll('input, textarea, select'))
+  const controls = Array.from(document.querySelectorAll('input, textarea, select, [role=combobox], [aria-haspopup=listbox]'))
     .filter((element) => {
       const type = clean(element.getAttribute('type') || 'text', 32).toLowerCase();
-      return isVisible(element) && !['hidden', 'submit', 'reset', 'button', 'image'].includes(type);
+      return isVisible(element) && (element.matches('[role=combobox], [aria-haspopup=listbox]') || !['hidden', 'submit', 'reset', 'button', 'image'].includes(type));
     });
   const normalizeOption = (value) => clean(value, 500).toLocaleLowerCase('zh-CN');
+  const optionMatches = (wanted, label, value) => {
+    if (label === wanted || value === wanted) return true;
+    if (wanted === '硕士' && label === '硕士研究生') return true;
+    if (wanted === '本科' && label === '大学本科') return true;
+    const withoutCitySuffix = (text) => text.replace(/市$/u, '');
+    return wanted.length >= 2 && withoutCitySuffix(label) === withoutCitySuffix(wanted);
+  };
   const prepared = requested.map((request) => {
     const element = controls[request.ordinal];
     if (
       !element || element.disabled || element.readOnly ||
       controlType(element) !== request.controlType ||
-      clean(element.getAttribute('type') || element.tagName.toLowerCase(), 32).toLowerCase() !== request.inputType ||
+      (controlType(element) === 'combobox' ? 'combobox' : clean(element.getAttribute('type') || element.tagName.toLowerCase(), 32).toLowerCase()) !== request.inputType ||
       labelFor(element) !== request.label ||
       clean(element.getAttribute('name') || '', 120) !== request.name ||
       String(element.value || '').length > 0
     ) return null;
     if (element.tagName === 'SELECT') {
       const wanted = normalizeOption(request.value);
-      const option = Array.from(element.options).find((candidate) =>
-        normalizeOption(candidate.value) === wanted || normalizeOption(candidate.textContent) === wanted
-      );
+      const option = Array.from(element.options).find((candidate) => optionMatches(
+        wanted,
+        normalizeOption(candidate.textContent),
+        normalizeOption(candidate.value),
+      ));
       return option ? { request, element, option } : null;
     }
+    if (controlType(element) === 'combobox') return { request, element };
     if (!['INPUT', 'TEXTAREA'].includes(element.tagName)) return null;
     return { request, element };
   });
@@ -1507,6 +1608,21 @@ export function createApplicationFormFillExpression(fields: readonly Application
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
       if (!setter || !option) return { status: 'fill_plan_mismatch' };
       setter.call(element, option.value);
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (controlType(element) === 'combobox') {
+      element.click();
+      const listboxId = element.getAttribute('aria-controls');
+      const listbox = listboxId ? document.getElementById(listboxId) : document.querySelector('[role=listbox]');
+      if (!listbox || !isVisible(listbox)) return { status: 'fill_plan_mismatch' };
+      const wanted = normalizeOption(request.value);
+      const option = Array.from(listbox.querySelectorAll('[role=option]')).find((candidate) => {
+        const label = normalizeOption(candidate.textContent || '');
+        const value = normalizeOption(candidate.getAttribute('data-value') || candidate.getAttribute('value') || '');
+        return optionMatches(wanted, label, value);
+      });
+      if (!option) return { status: 'fill_plan_mismatch' };
+      option.click();
     } else {
       const prototype = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
@@ -1516,7 +1632,16 @@ export function createApplicationFormFillExpression(fields: readonly Application
     element.dispatchEvent(new Event('input', { bubbles: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }
-  return { status: 'filled', sourceUrl, ordinals: prepared.map((entry) => entry.request.ordinal) };
+  const actions = Array.from(document.querySelectorAll('button, input[type=submit], [role=button]')).filter(isVisible);
+  const actionText = actions.map((element) => clean(element.textContent || element.value || element.getAttribute('aria-label') || '', 80));
+  const hasFinalSubmit = actionText.some((text) => /^(提交|确认提交|投递|申请|submit|apply)$/iu.test(text));
+  const hasNextStep = actionText.some((text) => /(下一步|保存并继续|继续|next|save and continue)/iu.test(text));
+  return {
+    status: 'filled',
+    sourceUrl,
+    ordinals: prepared.map((entry) => entry.request.ordinal),
+    nextAction: hasFinalSubmit ? 'review_before_submit' : hasNextStep ? 'next_step_handoff' : 'review_before_submit',
+  };
 })()`;
 }
 
@@ -1900,7 +2025,6 @@ function parseApplicationFormFillInspection(value: unknown): ApplicationFormFill
     value.status !== "filled" ||
     typeof value.sourceUrl !== "string" ||
     !Array.isArray(value.ordinals) ||
-    value.ordinals.length === 0 ||
     value.ordinals.length > 50 ||
     !value.ordinals.every(
       (ordinal) => Number.isSafeInteger(ordinal) && ordinal >= 0 && ordinal < MAX_APPLICATION_FORM_FIELDS,
@@ -1912,6 +2036,7 @@ function parseApplicationFormFillInspection(value: unknown): ApplicationFormFill
     status: "filled",
     sourceUrl: value.sourceUrl,
     ordinals: value.ordinals as number[],
+    nextAction: value.nextAction === "next_step_handoff" ? "next_step_handoff" : "review_before_submit",
   };
 }
 
@@ -1929,6 +2054,7 @@ function parseApplicationFormField(
     "month",
     "textarea",
     "select",
+    "combobox",
     "checkbox",
     "radio",
     "file",
@@ -1961,6 +2087,17 @@ function parseApplicationFormField(
   }
   const name = optionalBoundedString(value.name, 120, true);
   const autocomplete = optionalBoundedString(value.autocomplete, 80, true);
+  const options = Array.isArray(value.options)
+    ? value.options
+        .flatMap((option): { label: string; value?: string }[] => {
+          if (!isRecord(option) || typeof option.label !== "string") return [];
+          const label = optionalBoundedString(option.label, 120, true);
+          if (label === undefined) return [];
+          const optionValue = optionalBoundedString(option.value, 120, true);
+          return [{ label, ...(optionValue === undefined ? {} : { value: optionValue }) }];
+        })
+        .slice(0, 100)
+    : undefined;
   return [
     {
       ordinal: value.ordinal as number,
@@ -1973,6 +2110,7 @@ function parseApplicationFormField(
       disabled: value.disabled,
       readOnly: value.readOnly,
       currentState: value.currentState as BrowserApplicationFormField["currentState"],
+      ...(options === undefined || options.length === 0 ? {} : { options }),
     },
   ];
 }
@@ -2117,6 +2255,7 @@ function isFillableControl(controlType: BrowserApplicationFormControlType): bool
     "month",
     "textarea",
     "select",
+    "combobox",
   ]).has(controlType);
 }
 

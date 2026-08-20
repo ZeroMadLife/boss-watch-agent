@@ -20,7 +20,7 @@ const RESUME_UPLOAD_SESSION_TTL_MS = 10 * 60 * 1000;
 const MAX_RESUME_UPLOADS_PER_SESSION = 20;
 const MAX_ACTIVE_RESUME_UPLOAD_SESSIONS = 32;
 const EXTENSION_ORIGIN_PATTERN = /^chrome-extension:\/\/([a-p]{32})$/u;
-const DEFAULT_DSH_WEB_ORIGIN = "http://127.0.0.1:3080";
+const DEFAULT_DSH_WEB_ORIGINS = ["http://127.0.0.1:3080", "http://127.0.0.1:3081"] as const;
 export const BOSS_WATCH_API_CONTRACT_VERSION = "2026-08-19.closed-loop-v1";
 const BOSS_WATCH_BUILD_IDENTITY = `boss-watch-agent@0.1.0+api-${BOSS_WATCH_API_CONTRACT_VERSION}`;
 const RESUME_MEDIA_TYPES: ReadonlyMap<string, string> = new Map([
@@ -46,8 +46,10 @@ export interface LocalApiServerOptions {
   piAnalyzer?: PiConversationAnalyzer;
   browserRuntime?: BossHunterBrowserRuntime;
   serviceToken?: string;
-  /** Exact DSH Web origin allowed to stage local resume files. */
+  /** Legacy single exact DSH Web origin allowed to stage local files. */
   dshWebOrigin?: string;
+  /** Exact DSH Web origins allowed to stage local files. Never use a wildcard. */
+  dshWebOrigins?: readonly string[];
   /** Controlled local directory used by the DSH resume import tool. */
   resumeRoot?: string;
   /** Controlled local directory used by the DSH progress-signal import tool. */
@@ -74,7 +76,13 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
   const pairingCode = options.pairingCode ?? String(randomInt(0, 1_000_000)).padStart(6, "0");
   if (!/^\d{6}$/u.test(pairingCode)) throw new Error("invalid_pairing_code");
   const pairingExpiresAt = options.pairingExpiresAt ?? new Date(now().getTime() + 5 * 60 * 1000);
-  const dshWebOrigin = normalizeDshWebOrigin(options.dshWebOrigin ?? DEFAULT_DSH_WEB_ORIGIN);
+  const configuredDshWebOrigins =
+    options.dshWebOrigins ??
+    (options.dshWebOrigin === undefined ? DEFAULT_DSH_WEB_ORIGINS : [options.dshWebOrigin]);
+  if (configuredDshWebOrigins.length === 0) throw new Error("invalid_dsh_web_origin");
+  const dshWebOrigins = new Set(configuredDshWebOrigins.map(normalizeDshWebOrigin));
+  const isDshWebOrigin = (origin: string | undefined): origin is string =>
+    origin !== undefined && dshWebOrigins.has(origin);
   const resumeRoot = resolve(options.resumeRoot ?? join(dirname(options.databasePath), "resumes"));
   const progressSignalRoot = resolve(
     options.progressSignalRoot ?? join(dirname(options.databasePath), "progress-signals"),
@@ -107,6 +115,7 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
           captureJob: (snapshot) => captureApi.captureJob(snapshot),
           captureConversation: (snapshot) => captureApi.captureConversation(snapshot),
           now,
+          allowedResumeRoot: resumeRoot,
         });
 
   const httpServer = createServer((request, response) => {
@@ -120,13 +129,13 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
   async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const origin = request.headers.origin;
     const extensionId = extensionIdFromOrigin(origin);
-    if (origin !== undefined && extensionId === undefined && origin !== dshWebOrigin) {
+    if (origin !== undefined && extensionId === undefined && !isDshWebOrigin(origin)) {
       throw new ApiError(403, "origin_not_allowed");
     }
     if (origin !== undefined) setCorsHeaders(response, origin);
 
     if (request.method === "OPTIONS") {
-      if (extensionId === undefined && origin !== dshWebOrigin) throw new ApiError(403, "origin_not_allowed");
+      if (extensionId === undefined && !isDshWebOrigin(origin)) throw new ApiError(403, "origin_not_allowed");
       response.writeHead(204);
       response.end();
       return;
@@ -155,7 +164,7 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
     }
 
     if (url.pathname === "/api/v1/resumes/upload-session" || url.pathname === "/api/v1/resumes/upload") {
-      if (origin !== dshWebOrigin) throw new ApiError(403, "dsh_origin_required");
+      if (!isDshWebOrigin(origin)) throw new ApiError(403, "dsh_origin_required");
       if (request.method === "POST" && url.pathname === "/api/v1/resumes/upload-session") {
         discardExpiredResumeUploadSessions(now().getTime());
         if (resumeUploadSessions.size >= MAX_ACTIVE_RESUME_UPLOAD_SESSIONS) {
@@ -190,7 +199,7 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
       url.pathname === "/api/v1/progress-signals/upload-session" ||
       url.pathname === "/api/v1/progress-signals/upload"
     ) {
-      if (origin !== dshWebOrigin) throw new ApiError(403, "dsh_origin_required");
+      if (!isDshWebOrigin(origin)) throw new ApiError(403, "dsh_origin_required");
       if (request.method === "POST" && url.pathname === "/api/v1/progress-signals/upload-session") {
         discardExpiredUploadSessions(progressSignalUploadSessions, now().getTime());
         if (progressSignalUploadSessions.size >= MAX_ACTIVE_RESUME_UPLOAD_SESSIONS) {
@@ -356,7 +365,7 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
           typeof body.expectedFormHash !== "string" ||
           !/^[a-f0-9]{64}$/u.test(body.expectedFormHash) ||
           !Array.isArray(body.fields) ||
-          body.fields.length === 0 ||
+          (body.fields.length === 0 && body.resumeUpload === undefined) ||
           body.fields.length > 50 ||
           !body.fields.every(
             (field) =>
@@ -371,6 +380,18 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
         ) {
           throw new ApiError(400, "invalid_request");
         }
+        if (
+          body.resumeUpload !== undefined &&
+          (!isRecord(body.resumeUpload) ||
+            typeof body.resumeUpload.filePath !== "string" ||
+            body.resumeUpload.filePath.length > 4096 ||
+            typeof body.resumeUpload.contentHash !== "string" ||
+            !/^[a-f0-9]{64}$/u.test(body.resumeUpload.contentHash) ||
+            typeof body.resumeUpload.fieldId !== "string" ||
+            !/^form-field:[a-f0-9]{64}$/u.test(body.resumeUpload.fieldId))
+        ) {
+          throw new ApiError(400, "invalid_request");
+        }
         writeJson(
           response,
           200,
@@ -378,6 +399,15 @@ export function createLocalApiServer(options: LocalApiServerOptions): LocalApiSe
             expectedUrl: body.expectedUrl.trim(),
             expectedFormHash: body.expectedFormHash,
             fields: body.fields.map((field) => ({ fieldId: field.fieldId, value: field.value })),
+            ...(body.resumeUpload === undefined
+              ? {}
+              : {
+                  resumeUpload: {
+                    filePath: body.resumeUpload.filePath as string,
+                    contentHash: body.resumeUpload.contentHash as string,
+                    fieldId: body.resumeUpload.fieldId as string,
+                  },
+                }),
           }),
         );
         return;
