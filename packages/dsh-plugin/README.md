@@ -17,8 +17,8 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_follow_up_list`：读取本地跟进收件箱，并与最新 application 时间线合并；
 - `boss_watch_follow_up_schedule`：为已存在的 application 创建本地提醒，不执行外部动作；
 - `boss_watch_follow_up_complete`：关闭一条本地提醒，不代表外部跟进已经成功；
-- `boss_watch_lead_search`：只读查询 GankInterview 校招岗位并保存最小本地候选快照；不核验官网、不投递；
-- `boss_watch_search_plan_preview`：基于本地求职偏好生成 GankInterview/BOSS 的只读搜索计划；不访问外部来源；
+- `boss_watch_lead_search`：只读查询已配置的外部校招信源并保存最小本地候选快照；不核验官网、不投递；
+- `boss_watch_search_plan_preview`：基于本地求职偏好生成外部校招信源/BOSS 的只读搜索计划；不访问外部来源；
 - `boss_watch_recruitment_source_preview` / `boss_watch_recruitment_source_apply`：预览并确认用户粘贴的公司、HTTPS 招聘链接和可选内推码；只写本地来源收件箱，不伪造岗位、不访问官网；
 - `boss_watch_recruitment_source_list` / `boss_watch_recruitment_source_get`：读取来源收件箱；`source_only` 仍需绑定确切岗位和完整 JD；
 - `boss_watch_recruitment_jd_preview` / `boss_watch_recruitment_jd_apply`：为已确认来源预览并绑定确切岗位、官网 URL 和完整 JD；preview 不写库且不回显 JD，apply 经明确确认后写本地 Artifact、创建 `human_confirmed` 官网 JobLead，并回写 `leadId/applicationId/JD hash`；
@@ -64,7 +64,7 @@ DeepSeek Harness 的求职业务插件。当前版本提供本地事实查询和
 - `boss_watch_growth_plan_preview`：只读受控 Obsidian Markdown 索引，结合匹配缺口生成学习建议；不返回笔记正文、不写 Vault。
 
 同时注册 `boss-watch-job-search` Skill，指导模型按需使用只读工具并在外部动作前停在审批。
-用户没有指定来源、只说“开始找工作”时，Skill 先调用 workspace overview，再让用户在 GankInterview、
+用户没有指定来源、只说“开始找工作”时，Skill 先调用 workspace overview，再让用户在外部校招信源、
 BOSS 当前页、文件、剪贴板或截图中选择一条来源路径，不同时触发多来源读取。
 
 岗位摘要使用 `salaryStatus=available|obfuscated|missing` 表示薪资字段质量。私有字体混淆时不返回
@@ -108,7 +108,7 @@ DSH 原生聊天附件目前只支持 PNG/JPG/WebP/GIF；插件在输入栏提�
 `company_career_site` JobLead，随后把 `leadId/applicationId/JD hash` 绑定回来源。JD 原文只存在本地 Artifact；
 工具结果、来源表和匹配历史不保存或回显原文。相同预览重试幂等，来源哈希变化会拒绝旧预览。
 
-来源不是持续同步。每次 `boss_watch_lead_search` 只拉取当前请求命中的 GankInterview 页面，并在同一 SQLite
+来源不是持续同步。每次 `boss_watch_lead_search` 只拉取当前请求命中的外部校招信源页面，并在同一 SQLite
 事务中更新 `job_leads` 当前快照、追加 `job_lead_observations`。观察类型为 `new/unchanged/changed`；变化记录
 旧 `contentHash`、旧 confidence 以及是否撤销过核验。完全相同的
 `sourceKind + sourceRecordId + contentHash + fetchedAt` 重试幂等，A→B→A 的回退仍保留三次观察。
@@ -149,9 +149,8 @@ DSH_HOME="$HOME/Library/Application Support/BossWatchAgent/dsh" \
 BOSS_WATCH_DB_PATH="/path/to/boss-watch.sqlite3" npm run dsh:dev
 ```
 
-从 `boss-watch-agent` 执行 `npm run dsh:dev` 时，launcher 会优先读取 macOS Keychain 服务
-`gankinterview-api-key`，只把密钥注入 DSH 子进程环境，不打印或落盘。也可以显式设置
-`GANKINTERVIEW_API_KEY` 覆盖 Keychain；未配置时仅禁用 GankInterview 网络搜索，本地候选读取仍可用。
+可选外部信源的本地凭据与启动配置见仓库的 DSH 本地开发文档。未配置外部信源时，
+本地候选、文件导入和浏览器读取能力仍可使用。
 
 Browser Controller 默认读取：
 
