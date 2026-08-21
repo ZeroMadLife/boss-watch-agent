@@ -20,7 +20,6 @@ import type { LocalBossJobSearchService } from "./boss-job-search.js";
 import type { LocalCandidateBoardService } from "./candidate-board.js";
 import type { LocalCandidateProfileService } from "./candidate-profile.js";
 import type { BossWatchBrowserController, BossWatchDataSource } from "./domain.js";
-import type { LocalFeishuProjectionService } from "./feishu-projection.js";
 import type { LocalGateAService } from "./gate-a.js";
 import type { InterviewNoteStage, LocalInterviewNoteClient } from "./interview-note-client.js";
 import type { LocalJobDescriptionDiffService } from "./job-diff.js";
@@ -46,6 +45,9 @@ import type { LocalResumeImportService, ResumeVersionStore } from "./resume-vers
 import type { VisualLeadImportService, VisualLeadRowInput } from "./visual-lead-import.js";
 import type { LocalWorkspaceOverviewService } from "./workspace-overview.js";
 import type { LocalKnowledgeGrowthService } from "./knowledge-growth.js";
+import type { LocalJobSourceRefreshScheduler } from "./job-source-refresh-scheduler.js";
+import type { LocalInterviewKnowledgeService } from "./interview-note-knowledge.js";
+import type { LocalFeishuProjectionService } from "./feishu-projection.js";
 
 const unsafeDefineTool = dshDefineTool as unknown as (
   options: DefineToolOptions<ParameterSchemaSpec, ValueSchemaSpec>,
@@ -80,6 +82,12 @@ const STATUS = {
   type: "string",
   required: true,
   enum: ["ok", "source_unavailable", "not_found", "invalid_request"],
+} as const;
+
+const SOURCE_REFRESH_STATUS = {
+  type: "string",
+  required: true,
+  enum: ["ok", "source_unavailable", "invalid_request", "conflict"],
 } as const;
 
 const JOB = {
@@ -602,6 +610,30 @@ const INTERVIEW_NOTE_PREVIEW = {
   },
 } as const;
 
+const KNOWLEDGE_STATUS = {
+  type: "string",
+  required: true,
+  enum: ["ok", "not_found", "invalid_request", "conflict", "source_unavailable"],
+} as const;
+
+const INTERVIEW_KNOWLEDGE_PREVIEW = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    previewToken: { type: "string", required: true },
+    applicationId: { type: "string", required: true },
+    company: { type: "string", required: true },
+    role: { type: "string", required: true },
+    interviewId: { type: "string", required: true },
+    stage: { type: "string", required: true },
+    contentHash: { type: "string", required: true },
+    contentLength: { type: "integer", required: true },
+    relativePath: { type: "string", required: true },
+    expiresAt: { type: "string", required: true },
+    requiresConfirmation: { type: "boolean", required: true },
+  },
+} as const;
+
 const PROGRESS_SIGNAL_STATUS = {
   type: "string",
   required: true,
@@ -801,6 +833,33 @@ const CANDIDATE_PROFILE_STATUS = {
   enum: ["ok", "source_unavailable", "not_found", "invalid_request", "conflict"],
 } as const;
 
+const SOURCE_REFRESH_RUN = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    runId: { type: "string", required: true },
+    sourceKind: { type: "string", required: true, enum: ["gankinterview_campus"] },
+    status: { type: "string", required: true, enum: ["completed", "failed"] },
+    startedAt: { type: "string", required: true },
+    finishedAt: { type: "string", required: true },
+    leadCount: { type: "integer", required: true },
+    leadIds: { type: "array", items: { type: "string" }, required: true },
+    errorCode: { type: "string" },
+  },
+} as const;
+
+const SOURCE_REFRESH = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: { type: "boolean", required: true },
+    running: { type: "boolean", required: true },
+    intervalMinutes: { type: "integer", required: true },
+    nextRunAt: { type: "string" },
+    lastRun: SOURCE_REFRESH_RUN,
+  },
+} as const;
+
 function renderJson(_args: unknown, value: unknown): ContentBlock[] {
   return [{ type: "text", text: JSON.stringify(value) }];
 }
@@ -838,6 +897,8 @@ export function registerBossWatchTools(
   applicationStatus?: LocalApplicationStatusClient,
   candidateProfile?: LocalCandidateProfileService,
   knowledgeGrowth?: LocalKnowledgeGrowthService,
+  jobSourceRefreshScheduler?: LocalJobSourceRefreshScheduler,
+  interviewKnowledge?: LocalInterviewKnowledgeService,
 ): () => void {
   const disposers = [
     ctx.tools.register(
@@ -2202,6 +2263,59 @@ export function registerBossWatchTools(
               persistedLocally: false,
               message: stableError(error),
             };
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_source_refresh_status",
+        description:
+          "Read the opt-in external job-source refresh scheduler. It only refreshes the configured structured source and never polls BOSS or opens a browser page.",
+        parameters: {},
+        output: {
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { status: SOURCE_REFRESH_STATUS, scheduler: SOURCE_REFRESH, message: { type: "string" } },
+          },
+          render: renderJson,
+        },
+        async execute() {
+          if (jobSourceRefreshScheduler === undefined) return { status: "source_unavailable" as const, message: "gankinterview_not_configured" };
+          return { status: "ok" as const, scheduler: jobSourceRefreshScheduler.status() };
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_source_refresh",
+        description:
+          "Refresh the configured structured external job source once, or start/stop its low-frequency 60-180 minute scheduler. This never opens BOSS, navigates a browser, sends messages, or applies jobs.",
+        parameters: {
+          action: { type: "string", required: true, enum: ["run_now", "start", "stop"] },
+          runImmediately: { type: "boolean", description: "When starting, run one source refresh immediately." },
+        },
+        output: {
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { status: SOURCE_REFRESH_STATUS, scheduler: SOURCE_REFRESH, run: SOURCE_REFRESH_RUN, message: { type: "string" } },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (jobSourceRefreshScheduler === undefined) return { status: "source_unavailable" as const, message: "gankinterview_not_configured" };
+          try {
+            if (args.action === "run_now") {
+              return { status: "ok" as const, run: await jobSourceRefreshScheduler.runNow(), scheduler: jobSourceRefreshScheduler.status() };
+            }
+            const scheduler = args.action === "start"
+              ? jobSourceRefreshScheduler.start({ runImmediately: args.runImmediately === true })
+              : jobSourceRefreshScheduler.stop();
+            return { status: "ok" as const, scheduler };
+          } catch (error: unknown) {
+            return { status: error instanceof Error && error.message === "job_source_refresh_in_progress" ? "conflict" as const : "invalid_request" as const, message: stableError(error) };
           }
         },
       }),
@@ -4299,6 +4413,122 @@ export function registerBossWatchTools(
         },
       }),
     ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_interview_knowledge_preview",
+        description:
+          "Preview saving a manually entered interview note to the configured local Obsidian vault. The note body is never returned; apply requires a separate explicit confirmation.",
+        parameters: {
+          applicationId: { type: "string", required: true },
+          interviewId: { type: "string", required: true },
+          stage: { type: "string", required: true, enum: ["screening", "first_interview", "second_interview", "final_interview", "other"] },
+          content: { type: "string", required: true },
+          occurredAt: { type: "string" },
+        },
+        output: {
+          schema: { type: "object", additionalProperties: false, properties: { status: KNOWLEDGE_STATUS, preview: INTERVIEW_KNOWLEDGE_PREVIEW, message: { type: "string" } } },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (interviewKnowledge === undefined) return { status: "source_unavailable" as const, message: "interview_knowledge_unavailable" };
+          try {
+            const job = await source.getJob(args.applicationId)
+            if (job === undefined) return { status: "not_found" as const, message: "application_not_found" }
+            const preview = interviewKnowledge.preview({
+              applicationId: args.applicationId,
+              company: job.company,
+              role: job.role,
+              interviewId: args.interviewId,
+              stage: args.stage,
+              content: args.content,
+              occurredAt: typeof args.occurredAt === "string" ? args.occurredAt : new Date().toISOString(),
+            })
+            return { status: "ok" as const, preview }
+          } catch (error: unknown) {
+            return { status: "invalid_request" as const, message: stableError(error) }
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_interview_knowledge_apply",
+        description:
+          "Apply exactly one local Obsidian interview-note preview after explicit confirmation. Writes only the previewed note path and content; never writes Feishu or external platforms.",
+        parameters: {
+          previewToken: { type: "string", required: true },
+          confirmed: { type: "boolean", required: true },
+        },
+        output: {
+          schema: { type: "object", additionalProperties: false, properties: { status: KNOWLEDGE_STATUS, result: { type: "json" }, message: { type: "string" } } },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (interviewKnowledge === undefined) return { status: "source_unavailable" as const, message: "interview_knowledge_unavailable" };
+          try {
+            return { status: "ok" as const, result: await interviewKnowledge.apply(args.previewToken, args.confirmed) as unknown as JsonValue }
+          } catch (error: unknown) {
+            return { status: error instanceof Error && error.message === "knowledge_preview_not_found" ? "not_found" as const : "invalid_request" as const, message: stableError(error) }
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_interview_feishu_preview",
+        description:
+          "Preview projecting one interview note to a confirmed Feishu target. Requires explicit interview fields (company, role, interview id/stage/note) in that table; never guesses or writes before apply.",
+        parameters: {
+          targetId: { type: "string", required: true },
+          applicationId: { type: "string", required: true },
+          interviewId: { type: "string", required: true },
+          stage: { type: "string", required: true, enum: ["screening", "first_interview", "second_interview", "final_interview", "other"] },
+          content: { type: "string", required: true },
+          occurredAt: { type: "string" },
+        },
+        output: {
+          schema: { type: "object", additionalProperties: false, properties: { status: FEISHU_PROJECTION_STATUS, preview: { type: "json" }, message: { type: "string" } } },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (feishuProjection === undefined) return { status: "source_unavailable" as const, message: "feishu_projection_unavailable" };
+          try {
+            return { status: "ok" as const, preview: await feishuProjection.interviewNotePreview({
+              targetId: args.targetId,
+              applicationId: args.applicationId,
+              interviewId: args.interviewId,
+              stage: args.stage,
+              content: args.content,
+              occurredAt: typeof args.occurredAt === "string" ? args.occurredAt : new Date().toISOString(),
+            }) as unknown as JsonValue }
+          } catch (error: unknown) {
+            return feishuProjectionError(error)
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_interview_feishu_apply",
+        description: "Apply one exact Feishu interview-note preview after explicit confirmation; schema changes or ambiguous rows fail closed.",
+        parameters: {
+          previewToken: { type: "string", required: true },
+          confirmed: { type: "boolean", required: true },
+        },
+        output: {
+          schema: { type: "object", additionalProperties: false, properties: { status: FEISHU_PROJECTION_STATUS, result: { type: "json" }, message: { type: "string" } } },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (feishuProjection === undefined) return { status: "source_unavailable" as const, message: "feishu_projection_unavailable" };
+          try {
+            return { status: "ok" as const, result: await feishuProjection.interviewNoteApply(args.previewToken, args.confirmed) as unknown as JsonValue }
+          } catch (error: unknown) {
+            return feishuProjectionError(error)
+          }
+        },
+      }),
+    ),
   ];
 
   return () => {
@@ -4504,6 +4734,9 @@ function feishuProjectionError(error: unknown): {
     "feishu_record_conflict:job_url",
     "feishu_record_conflict:company_role",
     "feishu_mapping_incomplete",
+    "feishu_interview_mapping_incomplete",
+    "feishu_interview_mapping_incompatible",
+    "feishu_interview_record_ambiguous",
   ]);
   const invalid = new Set([
     "feishu_url_unresolvable",

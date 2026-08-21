@@ -632,6 +632,24 @@ BOSS 唯一聊天页
 消息捕获不接受任意 URL、target、选择器或脚本；多个聊天标签页、登录、验证码、风控和页面结构失配都交还人工。
 面经 apply 不代表面试通过，也不改变外部平台状态。preview token 只绑定本次 application、面试 ID、阶段、原文哈希和过期时间，服务重启或过期后必须重新预览。
 
+面经归档分为两个独立的显式写入目标：
+
+```text
+用户确认面经
+  -> interview_knowledge_preview/apply
+  -> 本地 Obsidian Vault（按公司/日期/阶段/面试 ID/内容哈希命名）
+
+用户确认面经 + 已确认 Feishu target
+  -> interview_feishu_preview
+  -> 核对公司、岗位、独立面试编号、阶段、面经和面试时间字段
+  -> interview_feishu_apply
+  -> Feishu 结构化面经记录
+```
+
+Feishu 面经映射必须同时存在公司、岗位、独立面试编号和面经字段。记录身份只使用“公司 + 岗位 + 面试编号”，
+不把会变化的面经正文作为身份键，也不复用投递状态字段。目标 schema 变化、必需字段缺失或身份匹配多行时拒绝应用。
+两条写入都不改变投递状态，不代表面试通过，也不向招聘平台发送消息。
+
 DSH Web 原生聊天附件仍只覆盖 PNG/JPG/WebP/GIF 图片；`boss-watch-dsh-plugin` 的 `dsh.client` 半部分在输入栏增加简历选择按钮，并监听输入区内的单文件粘贴/拖拽。客户端通过本机 4318 API 的短期上传会话把 PDF/DOCX/Markdown/TXT 暂存到受控目录，然后把文件名、显示名和内容哈希作为不可信元数据生成 `boss_watch_resume_import_preview` 请求，并追加到已有草稿；用户发送后仍按 preview/apply 规则确认。面经优先使用文本输入；图片形式的面试白板或截图可先交给视觉子代理提取，再由用户把核对后的文字作为面经 preview 输入，不能把视觉输出直接当作事实。
 
 ### 5.6 免登录进度信号
@@ -841,6 +859,10 @@ M3 第一阶段新增六个 Watch 工具。`create` 只从 `source.getJob(applic
 | `boss_watch_capture_current_conversation` | 读取当前唯一 BOSS 聊天页中选中会话最近一条招聘方消息 | 只写本地 SQLite；不回复、不点击、不发送 |
 | `boss_watch_interview_note_preview` | 预览用户手工录入的面经、阶段、哈希和过期时间 | 只读服务端内存，不写 SQLite |
 | `boss_watch_interview_note_apply` | 在用户确认精确岗位、面试 ID、阶段和哈希后归档面经 | 追加本地 Artifact/Event，不访问外部平台 |
+| `boss_watch_interview_knowledge_preview` | 预览写入本地 Obsidian 的面经目标路径和哈希 | 只读服务端内存，不写 Vault |
+| `boss_watch_interview_knowledge_apply` | 用户确认后幂等写入本地 Obsidian 面经 Markdown | 只写用户配置的本地 Vault |
+| `boss_watch_interview_feishu_preview` | 校验独立面经字段映射并预览 Feishu 记录 | 读取本地事实和远端 schema/记录，不写入 |
+| `boss_watch_interview_feishu_apply` | 用户确认后创建或更新唯一面经记录 | 只写本次预览绑定的 Feishu 记录 |
 
 这些工具都不接受任意 target ID、CSS 选择器、JavaScript 或目标 URL，避免模型把底层 CDP Runtime
 变成任意浏览器执行器。存在多个候选岗位标签页时返回 `target_ambiguous`，不猜测目标；发现结果过期
@@ -1062,14 +1084,14 @@ JD Diff、搜索和模型摘要可选择派生文本，审计和来源核对始�
 | M2.9 | 受控简历导入、不可变 ResumeVersion 目录和内容寻址本地工件 | 已实现；DSH Web PDF/DOCX 选择到 preview 已端到端验证，本地 v3 脱敏摘要/描述性能力匹配和 10-case Gold/Badcase 基线已通过 |
 | M2.10 | 从零开始的 workspace overview、来源路由和闭环 checkpoint | 已实现只读入口、粘贴招聘来源收件箱、确切官网 JD 绑定和脱敏匹配历史；自动官网选岗、Hosted Job Source API 与计费未实现 |
 | M3 | JD Watch 目标、节流、停止和变化 diff | 本地 Watch 核心、显式单次 poll、一次性到期批次 Scheduler 和结构化 diff 已实现；真实账号验收未完成 |
-| M4 | 面经/招聘消息归档和学习博客联动 | 招聘消息只读捕获、面经 preview/apply 与时间线已整合；学习博客联动仍待整理 |
+| M4 | 面经/招聘消息归档和学习博客联动 | 招聘消息只读捕获、面经 preview/apply、Obsidian 归档和 Feishu 独立字段投影已实现；学习博客联动仍待整理 |
 | M5 | Feishu 链接接入、字段映射、预览到审批再到幂等投影 | 已实现人工确认状态/投递时间的单向投影与 `sync_feishu` 看板导航；测试 Base 已验证单条写入，真实多状态长期验收待完成 |
 | M6 | 官网表单预览、一键填当前页、批量逐项 Gate B、Fresh Capture 与结果验证 | 哈希绑定 Gate A、按简历快照持久化 ATS 档案、标准/ARIA 控件扫描、确定性批量填写和受控简历上传已实现；最终提交与真实 ATS 扩展验收仍为人工边界 |
 | M7 | 按需 Launcher 与 DSH“求职中心” | 独立同源 `/boss-watch/` 工作台、左侧导航、岗位筛选/详情、来源和闭环状态展示已实现；岗位池与主页预览使用 10 条/页的本地分页，筛选后自动回到第 1 页；通过 DSH `shell.overlay` 集成到当前 Web 页面，仍可新页打开；独立 Launcher、真实岗位操作编排和自动外部执行仍未实现 |
 
 ## 12. 事实边界
 
-- **已实现**：从零开始的只读 workspace overview、本地采集 API、Controller 进程内 BOSS 搜索保护状态查询、统一岗位决策看板（公司/岗位、匹配度、公司类型和岗位方向筛选、投递入口、进度与详情）、粘贴招聘来源到确切官网 JD 的预览/确认绑定、`official_portal` JD Event/Artifact、SQLite 追加式事件、Application Tracker read model、人工状态 preview/apply、GankInterview `JobLead` 请求时快照与追加观察历史、腾讯 CSV/XLSX/剪贴板快照导入、DSH 截图视觉 preview/确认 apply、来源快照、受控 ResumeVersion 导入与内容寻址工件、DSH Web 简历选择按钮和本机短期上传会话、`local-evidence-match-v3` 脱敏摘要/能力匹配与 Gold/Badcase runner、`apply-preview-v2`、按简历快照持久化的 ATS Autofill Profile、标准/ARIA 表单扫描、当前页确定性批量填写和 Gate A 简历上传、批次本地计划/状态/checkpoint、Browser Controller、BOSS 岗位详情/选中会话招聘方消息观察、面经 preview/apply、Watch 本地状态机/预算/显式单次 poll/一次性到期批次、结构化 JD Diff、Feishu 目标/映射/确认状态单向投影、DSH 插件和导出。
+- **已实现**：从零开始的只读 workspace overview、本地采集 API、Controller 进程内 BOSS 搜索保护状态查询、统一岗位决策看板（公司/岗位、匹配度、公司类型和岗位方向筛选、投递入口、进度与详情）、粘贴招聘来源到确切官网 JD 的预览/确认绑定、`official_portal` JD Event/Artifact、SQLite 追加式事件、Application Tracker read model、人工状态 preview/apply、GankInterview `JobLead` 请求时快照与追加观察历史、腾讯 CSV/XLSX/剪贴板快照导入、DSH 截图视觉 preview/确认 apply、来源快照、受控 ResumeVersion 导入与内容寻址工件、DSH Web 简历选择按钮和本机短期上传会话、`local-evidence-match-v3` 脱敏摘要/能力匹配与 Gold/Badcase runner、`apply-preview-v2`、按简历快照持久化的 ATS Autofill Profile、标准/ARIA 表单扫描、当前页确定性批量填写和 Gate A 简历上传、批次本地计划/状态/checkpoint、Browser Controller、BOSS 岗位详情/选中会话招聘方消息观察、面经 preview/apply、Obsidian 面经归档、独立字段 Feishu 面经投影、Watch 本地状态机/预算/显式单次 poll/一次性到期批次、结构化 JD Diff、Feishu 目标/映射/确认状态单向投影、DSH 插件和导出。
 - **已验证**：fixture 中的无 Side Panel 捕获、幂等重试、服务身份、网页 Origin 拒绝、DSH Tool/Skill 组合和页面选择器；测试账号中的列表发现、指定岗位临时详情捕获、自动关页和幂等保存；DSH Web 中虚构 PDF 的选择、受控暂存、草稿生成和 `boss_watch_resume_import_preview` 调用；10 个虚构 Gold 场景和 7 个 Badcase 回归，包括描述性全栈 JD 与地点软偏好；Gate A 哈希绑定、`apply-preview-v2`、人工状态确认、状态提议隔离、确认状态/投递时间 Feishu 投影和 Loader 工具注册；GankInterview `/api/v1/campus` 的真实响应结构与只读 HTTP 适配 fixture；腾讯智能表两个公开只读岗位页的当前字段与链接形态；用户 Feishu 表的只读链接解析、字段读取、自动映射预览和单条记录回读；`lark-cli` 两种记录列表回执、无 `record_id` 写后唯一回查、Markdown URL 归一化及远端已有记录的 projection 恢复 fixture。
 - **持续验收**：BOSS 页面结构兼容性、字段混淆降级和 Watch 风险预算；一次测试账号通过不代表长期稳定。
 - **设计中**：独立 Launcher/独立侧栏（当前工作台已通过 DSH overlay 集成，独立页仍保留）、常驻 Watch 后台调度、自动官方页面核验、模型增强的简历语义抽取、批量投递外部执行、风险感知节流的跨进程版本、多页安全自动前进、最终提交和外部 Action；Feishu 反向同步与多条真实记录的长期验收。当前 Gold 只是 10 个虚构固定场景，扩大词表或模型边界前仍需增加经脱敏审查的真实分布样本。

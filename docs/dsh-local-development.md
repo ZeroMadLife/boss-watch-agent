@@ -31,8 +31,8 @@ export BOSS_HUNTER_DIR=/path/to/BossHunter
 - DSH 依赖：按上游仓库说明安装后再启动本项目
 
 DSH 源码仓库保持独立。需要阅读或修改 DSH 通用能力时，在 DSH 仓库单独创建分支；求职业务不直接写入 DSH 仓库。
-公开 CI 当前固定验证 `deepseek-harness@141eb6fef83422698aef7a981029e843e8161534`
-（`dsh-v0.1.0-rc.8`）。插件构建使用仓内的外部插件 preset，不再导入 DSH monorepo 私有构建辅助。
+当前本地兼容基线固定验证 `deepseek-harness@b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`
+（`dsh-v0.1.1-rc.2`）。插件构建使用仓内的外部插件 preset，不再导入 DSH monorepo 私有构建辅助。
 稳定兼容声明只跟随通过完整 CI 的 pinned commit。
 
 ## 启动 Browser Runtime 与本地服务
@@ -65,13 +65,14 @@ npm run dsh:dev
 
 默认配置：
 
-- `DSH_SOURCE_DIR`：优先寻找业务仓同级的 `deepseek-harness-rc8`，不存在时回退到 `deepseek-harness`
+- `DSH_SOURCE_DIR`：优先寻找业务仓同级的 `deepseek-harness-rc2`，不存在时回退到 `deepseek-harness`
 - `DSH_PROFILE=web`
 - `DSH_WEB_PORT=3080`
-- `DSH_HOME`：rc.8 默认使用 `~/Library/Application Support/BossWatchAgent/dsh-rc8-compat`；旧 checkout 使用 `.../dsh`
+- `DSH_OPEN_BROWSER=1`：显式让 DSH 启动时打开默认浏览器；默认不打开新窗口
+- `DSH_HOME`：rc.2 默认使用 `~/Library/Application Support/BossWatchAgent/dsh-rc2-compat`；旧 checkout 使用 `.../dsh`
 
-rc.8 的 DSH 自身 SQLite 存储格式与旧版不兼容，因此两个 `DSH_HOME` 必须隔离。Boss Watch 的业务 SQLite
-不受该变化影响；不要把旧 DSH storage 文件直接复制到 rc.8 目录。
+rc.2 的 DSH 自身 SQLite 存储格式与旧版不兼容，因此两个 `DSH_HOME` 必须隔离。Boss Watch 的业务 SQLite
+不受该变化影响；不要把旧 DSH storage 文件直接复制到 rc.2 目录。
 
 自定义 DSH checkout 或端口：
 
@@ -81,15 +82,12 @@ DSH_SOURCE_DIR=/path/to/deepseek-harness DSH_WEB_PORT=3081 npm run dsh:dev
 
 启动成功后打开 `http://127.0.0.1:<port>`。端口被占用时不要覆盖已有进程，改用一个明确的新端口。
 
-## NewAPI 视觉路由
+## 视觉路由
 
-视觉 provider 只在本机运行时配置，API key 通过 `NEWAPI_API_KEY` 环境变量或 DSH credentials
-引用提供，不写入仓库、Skill、Transcript 或日志。当前已验证 `claude-opus-5`、`gpt-5.6-sol` 和
-`gpt-5.6-terra` 接受图片；`glm-5.2` 由服务端明确标记为文本-only。DSH Web profile 中的
-`dsh-vision-subagent` 默认路由为 `newapi-vision/gpt-5.6-sol`；`npm run dsh:dev`
-通过 [`scripts/dsh-vision-default.patch.yml`](../scripts/dsh-vision-default.patch.yml) 在 profile 层之后覆盖该配置。
-直接使用 DSH CLI 或桌面端启动时，如 profile 的 `cordis.patch.yml` 仍是旧值，需要把其中
-`vision-subagent.model` 改为 `gpt-5.6-sol`。
+rc.2 已提供 DSH 原生多模态能力，默认使用当前 web profile 的视觉模型，不要求业务仓库固定某个模型。
+视觉 provider 只在本机运行时配置，API key 通过 DSH credentials 或环境变量引用，不写入仓库、Skill、
+Transcript 或日志。若需要在旧 profile 上临时覆盖视觉模型，可显式设置 `DSH_VISION_PATCH=`，启动器会应用
+[`scripts/dsh-vision-default.patch.yml`](../scripts/dsh-vision-default.patch.yml)；未设置该变量时不会覆盖 profile。
 
 NewAPI 对 OpenAI function Schema 要求显式 `required` 数组；本地 DSH pi-ai 适配层会将空参数
 工具规范化为 `required: []`。这只影响发送给兼容网关的 Schema，不改变插件注册和执行契约。
@@ -170,7 +168,7 @@ DSH_HOME="$HOME/Library/Application Support/BossWatchAgent/dsh" \
 会话，最多保留 32 个活跃会话，单文件上限 20 MiB、单会话最多 20 次上传尝试，只接受
 PDF/DOCX/Markdown/TXT；暂存完成后仅将绑定内容哈希的预览请求追加到 DSH 草稿，不覆盖已有输入，
 也不自动发送或 apply。默认只接受 `http://127.0.0.1:3080`，自定义 DSH 端口时同时设置
-`BOSS_WATCH_DSH_WEB_ORIGINS`（逗号分隔的精确本机 Origin）；兼容的单值变量是 `BOSS_WATCH_DSH_WEB_ORIGIN`。默认同时允许稳定版 `http://127.0.0.1:3080` 和 rc.8 验证版 `http://127.0.0.1:3081`，不使用通配符。自定义 4318 地址可在页面启动前设置 `globalThis.__BOSS_WATCH_API_ORIGIN__`。
+`BOSS_WATCH_DSH_WEB_ORIGINS`（逗号分隔的精确本机 Origin）；兼容的单值变量是 `BOSS_WATCH_DSH_WEB_ORIGIN`。默认同时允许稳定版 `http://127.0.0.1:3080` 和 rc.2 验证版 `http://127.0.0.1:3090`，不使用通配符。自定义 4318 地址可在页面启动前设置 `globalThis.__BOSS_WATCH_API_ORIGIN__`。
 
 进度信号按钮只接受 `.eml/.txt`，单文件上限 2 MiB。招聘官网或 ATS 的权威状态通常仍需登录查询；
 邮件分类只是本地证据和待确认状态提议，不能证明官网当前状态。需要投影到 Feishu 时，仍要另走

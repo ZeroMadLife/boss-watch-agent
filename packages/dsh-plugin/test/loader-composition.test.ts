@@ -89,6 +89,10 @@ test('registers bounded tools through a real Cordis Loader composition', async (
       'boss_watch_follow_up_schedule',
       'boss_watch_gate_a_confirm',
       'boss_watch_growth_plan_preview',
+      'boss_watch_interview_feishu_apply',
+      'boss_watch_interview_feishu_preview',
+      'boss_watch_interview_knowledge_apply',
+      'boss_watch_interview_knowledge_preview',
       'boss_watch_interview_note_apply',
       'boss_watch_interview_note_preview',
       'boss_watch_jd_diff',
@@ -121,6 +125,8 @@ test('registers bounded tools through a real Cordis Loader composition', async (
       'boss_watch_resume_match',
       'boss_watch_resume_match_list',
       'boss_watch_search_plan_preview',
+      'boss_watch_source_refresh',
+      'boss_watch_source_refresh_status',
       'boss_watch_source_status',
       'boss_watch_watch_create',
       'boss_watch_watch_list',
@@ -145,6 +151,8 @@ test('registers bounded tools through a real Cordis Loader composition', async (
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_capture_current_job/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_capture_current_conversation/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_interview_note_preview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_interview_knowledge_preview/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_interview_feishu_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_batch_prepare/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_batch_status/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_apply_batch_resume/u)

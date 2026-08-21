@@ -141,8 +141,10 @@ npm run dsh:dev
 默认地址为 `http://127.0.0.1:3080/`，求职工作台位于 `/boss-watch/`。如果端口已占用，请明确换端口：
 
 ```bash
-DSH_WEB_PORT=3081 npm run dsh:dev
+DSH_WEB_PORT=3090 npm run dsh:dev
 ```
+
+启动脚本默认不会自动打开新的浏览器窗口；需要显式打开时设置 `DSH_OPEN_BROWSER=1`。也可以直接访问终端打印的本地地址。
 
 重新构建业务代码后必须重启 `npm run serve`；不要在端口占用时直接结束来源不明的进程。完整配置、插件安装和
 Browser Runtime 启动方式见 [DSH 本地开发](docs/dsh-local-development.md) 与

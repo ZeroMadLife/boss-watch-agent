@@ -55,6 +55,8 @@ export const BOSS_WATCH_SKILL = {
 - 用户已经打开唯一岗位详情页时，可以直接调用 \`boss_watch_browser_status\` 和 \`boss_watch_capture_current_job\`。所有浏览器工具都不接受 target、任意 URL、CSS 或 JavaScript。
 - 用户已经打开 BOSS 的唯一聊天页、并明确把当前会话归属到某个已存在 application 时，调用 \`boss_watch_capture_current_conversation\`；它只读取当前选中会话最近一条招聘方可见消息，保存后返回事件/工件摘要。它不读取候选人自发消息、不回复、不点击、不发送；没有唯一聊天页、登录/验证码或页面适配失败时交还人工。
 - 用户要记录面经时，先调用 \`boss_watch_interview_note_preview\`，展示 application、面试阶段、内容哈希、长度和过期时间；只有用户确认精确的岗位、面试 ID、阶段和哈希后，才调用 \`boss_watch_interview_note_apply\`。apply 只把原文写入本地 interview_note Artifact 和追加事件，不代表面试已通过，也不写 BOSS 或飞书。
+- 用户要把已确认的面经归档到本地 Obsidian 时，调用 \`boss_watch_interview_knowledge_preview\`，确认公司、岗位、面试 ID、阶段、内容哈希和目标相对路径后才调用 \`boss_watch_interview_knowledge_apply\`；正文只写入本地 Vault，不回显到工具结果，不访问外部平台。
+- 用户要把面经投影到飞书时，先调用 \`boss_watch_interview_feishu_preview\`；目标表必须有独立的公司、岗位、面试编号和面经字段，不能用投递状态或公司+岗位猜测身份。确认字段映射、面试 ID、阶段、内容哈希和统计后才调用 \`boss_watch_interview_feishu_apply\`；schema 变化、字段不完整或多行匹配都拒绝应用。
 - 用户粘贴招聘邮件/通知文本，或通过输入栏回形针按钮暂存 \`.eml/.txt\` 后，先核对对应的唯一 application，再调用 \`boss_watch_progress_signal_preview\`。它只在本地做保守分类并返回哈希、\`interview/rejected/offer/needs_review\` 和可能的状态提议，不写 SQLite 或飞书，也不回显暂存邮件正文。
 - 只有用户确认 application、来源、内容哈希和提议结果后，才调用 \`boss_watch_progress_signal_apply\`。apply 追加本地证据和状态提议；\`needs_review\` 只记录待复核证据，不生成状态提议。\`no_response\` 只能来自用户建立的提醒，绝不能从邮件缺失、时间经过或模型猜测中推断。
 - 用户明确说自己已经完成投递、笔试，或人工确认了面试、拒绝、Offer、关闭状态时，先调用 \`boss_watch_application_status_preview\` 展示精确 application、状态和时间。只有用户确认后才调用 \`boss_watch_application_status_apply\` 追加 \`status_change_confirmed\`；该记录只描述用户观察到的事实，不代表 Agent 执行了投递，也不自动写 Feishu。若看板随后返回 \`nextAction=sync_feishu\`，应询问用户是否生成飞书同步预览；不得直接调用 apply。不得根据超时、页面缺失或模型推断调用。

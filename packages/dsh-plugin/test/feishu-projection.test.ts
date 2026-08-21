@@ -11,6 +11,10 @@ const fields: readonly FeishuField[] = [
   { id: 'fld-status', name: '当前进度', type: 'select', multiple: false, options: [{ name: '候选待评估' }, { name: '已投递' }] },
   { id: 'fld-applied-at', name: '投递时间', type: 'datetime', options: [] },
   { id: 'fld-note', name: '备注', type: 'text', styleType: 'plain', options: [] },
+  { id: 'fld-interview-id', name: '面试编号', type: 'text', styleType: 'plain', options: [] },
+  { id: 'fld-interview-stage', name: '面试阶段', type: 'select', multiple: false, options: [{ name: '一面' }, { name: '二面' }, { name: '终面' }] },
+  { id: 'fld-interview-note', name: '面经', type: 'text', styleType: 'plain', options: [] },
+  { id: 'fld-interview-at', name: '面试时间', type: 'datetime', options: [] },
 ]
 
 class FakeFeishuClient implements FeishuClient {
@@ -385,6 +389,103 @@ test('rejects the entire apply before writing when local facts change after prev
     assert.equal(client.createCalls, 0)
     assert.equal(client.updateCalls, 0)
     assert.equal(store.getProjection(target.targetId, 'application-test-1'), undefined)
+  } finally {
+    store.close()
+  }
+})
+
+test('previews and applies an interview note using an independent interview id', async () => {
+  const { service, client, store } = await setup()
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.interviewNotePreview({
+      targetId: target.targetId,
+      applicationId: 'application-test-1',
+      interviewId: 'round-1',
+      stage: 'first_interview',
+      content: '系统设计和项目复盘。',
+      occurredAt: '2026-08-19T02:30:00.000Z',
+    })
+
+    assert.equal(preview.contentLength, '系统设计和项目复盘。'.length)
+    assert.equal(preview.mappedFieldCount, 6)
+    assert.equal(preview.requiresConfirmation, true)
+    await assert.rejects(() => service.interviewNoteApply(preview.previewToken, false), /feishu_confirmation_required/u)
+
+    const applied = await service.interviewNoteApply(preview.previewToken, true)
+    assert.equal(applied.created, true)
+    assert.equal(applied.remoteRecordId, 'rec-created-1')
+    assert.deepEqual(client.lastCreateIdentityFieldIds, ['fld-company', 'fld-role', 'fld-interview-id'])
+
+    const repeated = await service.interviewNoteApply(preview.previewToken, true)
+    assert.deepEqual(repeated, applied)
+    assert.equal(client.createCalls, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('rejects interview-note preview when the independent interview id field is missing', async () => {
+  const { service, client, store } = await setup()
+  try {
+    client.schema = fields.filter(field => field.id !== 'fld-interview-id')
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    await assert.rejects(() => service.interviewNotePreview({
+      targetId: target.targetId,
+      applicationId: 'application-test-1',
+      interviewId: 'round-1',
+      stage: 'first_interview',
+      content: '缺少独立编号字段。',
+      occurredAt: '2026-08-19T02:30:00.000Z',
+    }), /feishu_interview_mapping_incomplete/u)
+  } finally {
+    store.close()
+  }
+})
+
+test('rejects an interview-note apply when the target schema changes after preview', async () => {
+  const { service, client, store } = await setup()
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.interviewNotePreview({
+      targetId: target.targetId,
+      applicationId: 'application-test-1',
+      interviewId: 'round-1',
+      stage: 'first_interview',
+      content: 'schema 变化。',
+      occurredAt: '2026-08-19T02:30:00.000Z',
+    })
+    client.schema = [...fields, { id: 'fld-schema-change', name: '新增字段', type: 'text', options: [] }]
+    await assert.rejects(() => service.interviewNoteApply(preview.previewToken, true), /feishu_schema_changed/u)
+    assert.equal(client.createCalls, 0)
+  } finally {
+    store.close()
+  }
+})
+
+test('recovers an uncertain interview-note create without issuing a second create', async () => {
+  const { service, client, store } = await setup()
+  try {
+    const targetPreview = await service.targetPreview('https://example.feishu.cn/wiki/test?table=tbl-test&view=view-test')
+    const target = service.confirmTarget(targetPreview.previewToken, true).target
+    const preview = await service.interviewNotePreview({
+      targetId: target.targetId,
+      applicationId: 'application-test-1',
+      interviewId: 'round-1',
+      stage: 'first_interview',
+      content: '创建回执异常。',
+      occurredAt: '2026-08-19T02:30:00.000Z',
+    })
+    client.failCreateAfterWrite = true
+    await assert.rejects(() => service.interviewNoteApply(preview.previewToken, true), /feishu_write_record_not_found_after_create/u)
+    client.failCreateAfterWrite = false
+    const recovered = await service.interviewNoteApply(preview.previewToken, true)
+    assert.equal(recovered.remoteRecordId, 'rec-recovered')
+    assert.equal(client.createCalls, 1)
+    assert.equal(client.recoverCalls, 1)
   } finally {
     store.close()
   }

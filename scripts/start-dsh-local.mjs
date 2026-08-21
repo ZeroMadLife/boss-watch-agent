@@ -5,16 +5,29 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync, spawn } from 'node:child_process'
 
 const repositoryDir = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const rc8SourceDir = join(repositoryDir, '..', 'deepseek-harness-rc8')
+const rc2SourceDir = join(repositoryDir, '..', 'deepseek-harness-rc2')
+const legacyRc8SourceDir = join(repositoryDir, '..', 'deepseek-harness-rc8')
 const sourceDir = resolve(
-  process.env.DSH_SOURCE_DIR ?? (existsSync(rc8SourceDir) ? rc8SourceDir : join(repositoryDir, '..', 'deepseek-harness')),
+  process.env.DSH_SOURCE_DIR
+    ?? (existsSync(rc2SourceDir)
+      ? rc2SourceDir
+      : existsSync(legacyRc8SourceDir)
+        ? legacyRc8SourceDir
+        : join(repositoryDir, '..', 'deepseek-harness')),
 )
 const profile = process.env.DSH_PROFILE ?? 'web'
 const port = process.env.DSH_WEB_PORT ?? '3080'
-const defaultDshHome = sourceDir === resolve(rc8SourceDir) ? 'dsh-rc8-compat' : 'dsh'
+const openBrowser = process.env.DSH_OPEN_BROWSER === '1'
+const defaultDshHome = sourceDir === resolve(rc2SourceDir)
+  ? 'dsh-rc2-compat'
+  : sourceDir === resolve(legacyRc8SourceDir)
+    ? 'dsh-legacy-rc8-compat'
+    : 'dsh'
 const dshHome = process.env.DSH_HOME
   ?? join(homedir(), 'Library', 'Application Support', 'BossWatchAgent', defaultDshHome)
-const visionPatch = fileURLToPath(new URL('./dsh-vision-default.patch.yml', import.meta.url))
+const visionPatch = process.env.DSH_VISION_PATCH === undefined
+  ? undefined
+  : resolve(process.env.DSH_VISION_PATCH || fileURLToPath(new URL('./dsh-vision-default.patch.yml', import.meta.url)))
 
 if (!existsSync(join(sourceDir, 'apps', 'cli', 'src', 'bin.ts'))) {
   console.error(`DSH source checkout not found: ${sourceDir}`)
@@ -31,15 +44,20 @@ if (!existsSync(join(sourceDir, 'node_modules'))) {
 console.log(`[dsh-dev] source=${sourceDir}`)
 console.log(`[dsh-dev] profile=${profile} port=${port}`)
 console.log(`[dsh-dev] DSH_HOME=${dshHome}`)
-console.log(`[dsh-dev] vision patch=${visionPatch}`)
+console.log(`[dsh-dev] vision patch=${visionPatch ?? 'DSH profile default'}`)
 
 const gankInterviewApiKey = process.env.GANKINTERVIEW_API_KEY ?? readGankInterviewApiKey()
 const childEnv = { ...process.env, DSH_HOME: dshHome }
 if (gankInterviewApiKey !== undefined) childEnv.GANKINTERVIEW_API_KEY = gankInterviewApiKey
 
+const dshArgs = ['--import', 'tsx/esm', 'apps/cli/src/bin.ts']
+if (visionPatch !== undefined) dshArgs.push('--patch', visionPatch)
+dshArgs.push('--profile', profile, '--port', port)
+if (!openBrowser) dshArgs.push('--no-open')
+
 const child = spawn(
   process.execPath,
-  ['--import', 'tsx/esm', 'apps/cli/src/bin.ts', '--patch', visionPatch, '--profile', profile, '--port', port],
+  dshArgs,
   {
     cwd: sourceDir,
     env: childEnv,

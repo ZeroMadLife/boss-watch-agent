@@ -19,6 +19,10 @@ export type FeishuSemanticField =
   | 'priority'
   | 'matchLevel'
   | 'companyType'
+  | 'interviewId'
+  | 'interviewStage'
+  | 'interviewNote'
+  | 'interviewAt'
 
 export interface FeishuMappedField {
   readonly semantic: FeishuSemanticField
@@ -290,6 +294,30 @@ export interface FeishuSyncApplyResult {
   readonly counts: { readonly created: number; readonly updated: number; readonly unchanged: number }
 }
 
+export interface FeishuInterviewNotePreview {
+  readonly targetId: string
+  readonly previewToken: string
+  readonly expiresAt: string
+  readonly applicationId: string
+  readonly company: string
+  readonly role: string
+  readonly interviewId: string
+  readonly stage: string
+  readonly contentHash: string
+  readonly contentLength: number
+  readonly mappedFieldCount: number
+  readonly requiresConfirmation: true
+}
+
+export interface FeishuInterviewNoteApplyResult {
+  readonly targetId: string
+  readonly previewToken: string
+  readonly applicationId: string
+  readonly remoteRecordId: string
+  readonly created: boolean
+  readonly contentHash: string
+}
+
 export type FeishuReconcileState = 'in_sync' | 'local_ahead' | 'remote_ahead' | 'conflict' | 'missing_remote'
 
 export interface FeishuReconcileItem {
@@ -328,12 +356,24 @@ interface StoredSyncPreview {
   readonly applied?: FeishuSyncApplyResult
 }
 
-type StoredPreview = StoredTargetPreview | StoredSyncPreview
+interface StoredInterviewNotePreview {
+  readonly kind: 'interview_note'
+  readonly preview: FeishuInterviewNotePreview
+  readonly target: FeishuTarget
+  readonly fields: Readonly<Record<string, unknown>>
+  readonly identityFieldIds: readonly string[]
+  readonly createdAtMs: number
+  readonly pendingCreate?: boolean
+  readonly remoteRecordId?: string
+  readonly applied?: FeishuInterviewNoteApplyResult
+}
+
+type StoredPreview = StoredTargetPreview | StoredSyncPreview | StoredInterviewNotePreview
 
 const PREVIEW_TTL_MS = 15 * 60 * 1000
 const SEMANTICS: readonly FeishuSemanticField[] = [
   'company', 'role', 'jobUrl', 'sourcePlatform', 'status', 'appliedAt', 'deadline', 'city', 'location',
-  'summary', 'priority', 'matchLevel', 'companyType',
+  'summary', 'priority', 'matchLevel', 'companyType', 'interviewId', 'interviewStage', 'interviewNote', 'interviewAt',
 ]
 
 const FIELD_ALIASES: Readonly<Record<FeishuSemanticField, readonly string[]>> = {
@@ -350,11 +390,15 @@ const FIELD_ALIASES: Readonly<Record<FeishuSemanticField, readonly string[]>> = 
   priority: ['推荐优先级', '优先级', 'priority'],
   matchLevel: ['jd匹配度', '匹配度', '岗位匹配度', 'matchlevel'],
   companyType: ['公司类型', '企业类型', '单位性质', 'companytype'],
+  interviewId: ['面试编号', '面试id', 'interviewid'],
+  interviewStage: ['面试阶段', '面试轮次', 'interviewstage'],
+  interviewNote: ['面经', '面试记录', '面试笔记', 'interviewnote'],
+  interviewAt: ['面试时间', '面试日期', '面试发生时间', 'interviewat'],
 }
 
-const TEXT_SEMANTICS = new Set<FeishuSemanticField>(['company', 'role', 'jobUrl', 'city', 'location', 'summary'])
-const SELECT_SEMANTICS = new Set<FeishuSemanticField>(['sourcePlatform', 'status', 'priority', 'matchLevel', 'companyType'])
-const DATE_SEMANTICS = new Set<FeishuSemanticField>(['appliedAt', 'deadline'])
+const TEXT_SEMANTICS = new Set<FeishuSemanticField>(['company', 'role', 'jobUrl', 'city', 'location', 'summary', 'interviewId', 'interviewNote'])
+const SELECT_SEMANTICS = new Set<FeishuSemanticField>(['sourcePlatform', 'status', 'priority', 'matchLevel', 'companyType', 'interviewStage'])
+const DATE_SEMANTICS = new Set<FeishuSemanticField>(['appliedAt', 'deadline', 'interviewAt'])
 
 const CONFIRMED_STATUS_OPTIONS = {
   submitted: ['已投递', '投递完成', '已申请'],
@@ -508,6 +552,135 @@ export class LocalFeishuProjectionService {
     })
     this.#prunePreviews()
     return preview
+  }
+
+  async interviewNotePreview(input: {
+    targetId: string
+    applicationId: string
+    interviewId: string
+    stage: string
+    content: string
+    occurredAt: string
+  }): Promise<FeishuInterviewNotePreview> {
+    const target = this.#store.getTarget(requireText(input.targetId, 'target_id'))
+    if (target === undefined) throw new Error('feishu_target_not_found')
+    const job = await this.#source.getJob(requireText(input.applicationId, 'application_id'))
+    if (job === undefined) throw new Error('application_not_found')
+    const fields = await this.#client.listFields(target.baseToken, target.tableId)
+    if (hashFields(fields) !== target.schemaHash) throw new Error('feishu_schema_changed')
+    const mapping = target.mapping
+    if (
+      mapping.company === undefined
+      || mapping.role === undefined
+      || mapping.interviewId === undefined
+      || mapping.interviewNote === undefined
+    ) {
+      throw new Error('feishu_interview_mapping_incomplete')
+    }
+    const values: Record<string, unknown> = {}
+    const semanticValues: Partial<Record<FeishuSemanticField, string>> = {
+      company: job.company,
+      role: job.role,
+      interviewId: requireText(input.interviewId, 'interview_id'),
+      interviewStage: requireText(input.stage, 'interview_stage'),
+      interviewNote: requireText(input.content, 'interview_note'),
+      interviewAt: requireTimestamp(input.occurredAt),
+    }
+    for (const semantic of ['company', 'role', 'interviewId', 'interviewStage', 'interviewNote', 'interviewAt'] as const) {
+      const mapped = mapping[semantic]
+      const value = semanticValues[semantic]
+      if (mapped === undefined || value === undefined) continue
+      const converted = semantic === 'interviewStage'
+        ? convertInterviewStage(mapped, value)
+        : convertCellValue(mapped, value)
+      if (converted !== undefined) values[mapped.fieldId] = converted
+    }
+    if (values[mapping.interviewNote.fieldId] === undefined) throw new Error('feishu_interview_mapping_incompatible')
+    const identityFieldIds = [mapping.company, mapping.role, mapping.interviewId]
+      .filter((field): field is FeishuMappedField => field !== undefined)
+      .map(field => field.fieldId)
+    const previewToken = `feishu-interview-preview:${randomBytes(24).toString('hex')}`
+    const preview: FeishuInterviewNotePreview = {
+      targetId: target.targetId,
+      previewToken,
+      expiresAt: new Date(Date.now() + PREVIEW_TTL_MS).toISOString(),
+      applicationId: input.applicationId,
+      company: job.company,
+      role: job.role,
+      interviewId: input.interviewId,
+      stage: input.stage,
+      contentHash: hashJson(input.content),
+      contentLength: input.content.length,
+      mappedFieldCount: Object.keys(values).length,
+      requiresConfirmation: true,
+    }
+    this.#previews.set(previewToken, {
+      kind: 'interview_note',
+      preview,
+      target,
+      fields: values,
+      identityFieldIds,
+      createdAtMs: Date.now(),
+    })
+    this.#prunePreviews()
+    return preview
+  }
+
+  async interviewNoteApply(previewToken: string, confirmed: boolean): Promise<FeishuInterviewNoteApplyResult> {
+    if (!confirmed) throw new Error('feishu_confirmation_required')
+    const stored = this.#getPreview(previewToken)
+    if (stored.kind !== 'interview_note') throw new Error('feishu_preview_kind_mismatch')
+    if (stored.applied !== undefined) return stored.applied
+    const fields = await this.#client.listFields(stored.target.baseToken, stored.target.tableId)
+    if (hashFields(fields) !== stored.target.schemaHash) throw new Error('feishu_schema_changed')
+    const records = await this.#listAllRecords(stored.target, fields)
+    const matches = records.filter(record => stored.identityFieldIds.every(fieldId => cellText(record.fields[fieldId]) === cellText(stored.fields[fieldId])))
+    if (matches.length > 1) throw new Error('feishu_interview_record_ambiguous')
+    let remoteRecordId: string
+    let created: boolean
+    if (matches.length === 1) {
+      remoteRecordId = (await this.#client.updateRecord({
+        baseToken: stored.target.baseToken,
+        tableId: stored.target.tableId,
+        recordId: matches[0]!.recordId,
+        fields: stored.fields,
+      })).recordId
+      created = false
+    } else {
+      try {
+        remoteRecordId = stored.pendingCreate === true
+          ? (this.#client.recoverCreatedRecord === undefined
+            ? (() => { throw new Error('feishu_create_recovery_unsupported') })()
+            : (await this.#client.recoverCreatedRecord({
+              baseToken: stored.target.baseToken,
+              tableId: stored.target.tableId,
+              fields: stored.fields,
+              identityFieldIds: stored.identityFieldIds,
+            })).recordId)
+          : (await this.#client.createRecord({
+            baseToken: stored.target.baseToken,
+            tableId: stored.target.tableId,
+            fields: stored.fields,
+            identityFieldIds: stored.identityFieldIds,
+          })).recordId
+      } catch (error: unknown) {
+        if (error instanceof Error && error.message === 'feishu_write_record_not_found_after_create') {
+          this.#previews.set(previewToken, { ...stored, pendingCreate: true })
+        }
+        throw error
+      }
+      created = true
+    }
+    const result: FeishuInterviewNoteApplyResult = {
+      targetId: stored.target.targetId,
+      previewToken,
+      applicationId: stored.preview.applicationId,
+      remoteRecordId,
+      created,
+      contentHash: stored.preview.contentHash,
+    }
+    this.#previews.set(previewToken, { ...stored, pendingCreate: false, remoteRecordId, applied: result })
+    return result
   }
 
   /** Compare local facts with saved projections and remote rows without writing either side. */
@@ -737,6 +910,7 @@ function buildMapping(fields: readonly FeishuField[]): { mapping: FeishuFieldMap
 }
 
 function isCompatibleField(semantic: FeishuSemanticField, field: FeishuField): boolean {
+  if (semantic === 'interviewStage') return field.type === 'select' || field.type === 'text'
   if (TEXT_SEMANTICS.has(semantic)) return field.type === 'text'
   if (SELECT_SEMANTICS.has(semantic)) return field.type === 'select'
   if (DATE_SEMANTICS.has(semantic)) return field.type === 'datetime'
@@ -847,9 +1021,29 @@ function convertCellValue(field: FeishuMappedField, value: string): unknown {
   return undefined
 }
 
+function convertInterviewStage(field: FeishuMappedField, value: string): unknown {
+  if (field.fieldType !== 'select') return value
+  const aliases: Record<string, readonly string[]> = {
+    screening: ['筛选', '初筛', '电话面'],
+    first_interview: ['一面', '初面', '第一轮面试'],
+    second_interview: ['二面', '第二轮面试'],
+    final_interview: ['终面', '终轮', '最终面试'],
+    other: ['其他', '其他面试'],
+  }
+  const normalized = value.toLowerCase()
+  const option = field.options.find(candidate => candidate === value || (aliases[normalized] ?? []).includes(candidate))
+  return option === undefined ? undefined : field.multiple === true ? [option] : option
+}
+
 function toFeishuDate(value: string): string | undefined {
   const parsed = new Date(value)
   if (!Number.isFinite(parsed.getTime())) return undefined
+  return parsed.toISOString()
+}
+
+function requireTimestamp(value: string): string {
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime())) throw new Error('invalid_interview_timestamp')
   return parsed.toISOString()
 }
 

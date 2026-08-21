@@ -29,17 +29,17 @@
 | 候选 | 本地验证 | 作用 | 当前决策 |
 | --- | --- | --- | --- |
 | `nexsjournal/dsh-vision-plugin` 1.1.1 | MIT；隔离 Web profile 挂载成功 | 给模型目录增加 `input: [text, image]` 声明；附带可选 BYO 视觉中继 | 暂不加入正式 profile，避免与现有路由重复 |
-| `ruby1304/dsh-vision-subagent` 0.3.1 | MIT；typecheck、30 tests、build 全通过；正式 profile 图片冒烟通过 | 文本主模型通过独立视觉路由处理用户主动粘贴的图片 | 正式 profile 使用，配置为 `newapi-vision/gpt-5.6-sol` |
+| `ruby1304/dsh-vision-subagent` 0.3.1 | MIT；typecheck、30 tests、build 全通过；正式 profile 图片冒烟通过 | 文本主模型通过独立视觉路由处理用户主动粘贴的图片 | 暂不作为 rc.2 的必需依赖，优先使用 DSH 原生多模态 |
 | `Anionex/dsh-vision-toolkit` | 未安装；代码面较大，含后端和运行时安装 | OCR、长截图和图像理解工具集合 | 先不引入，需独立安全审查 |
 | `bpc-oss/chrome-faithful` | 只读审查 | 真实 Chrome 截图、OCR、视觉提取 | 权限可触达 Cookie/CDP，不能直接加入正式 profile |
 
 ## 3. 已执行的联调
 
-正式 profile：`~/Library/Application Support/BossWatchAgent/dsh`，运行于 DSH Web `3080`。
+rc.2 隔离 profile：`~/Library/Application Support/BossWatchAgent/dsh-rc2-compat`，运行于 DSH Web `3090`。
 
 ```text
-dsh-vision-subagent     -> DSH Web 3080 -> 插件列表显示“dsh-vision-subagent 已挂载、已启用”
-newapi-vision/gpt-5.6-sol -> 图片粘贴桥 -> 主模型回复“视觉输入已收到”
+dsh-vision-subagent     -> DSH Web 3090 -> 插件列表显示“dsh-vision-subagent 已挂载、已启用”
+profile multimodal      -> 图片输入 -> 主模型回复“视觉输入已收到”
 ```
 
 对 `dsh-vision-subagent` 执行：
@@ -51,19 +51,17 @@ npm test                # 5 files / 30 tests 通过
 npm run build           # 通过
 ```
 
-DSH Web 输入框通过粘贴事件接收图片，插件先在独立视觉上下文分析，再把文字结论交给主会话。
-主模型是否能直接看图仍由模型目录的 `input: [text, image]` 声明决定；本 profile 选择
-`gpt-5.6-sol` 作为视觉主力，并保留 `claude-opus-5` 与 `gpt-5.6-terra` 作为人工切换的备用路由。
-`npm run dsh:dev` 会通过 `scripts/dsh-vision-default.patch.yml` 把 `dsh-vision-subagent` 覆盖为
-`newapi-vision/gpt-5.6-sol`；如果直接改 profile 的 `cordis.patch.yml`，同样应把 `model` 写成 `gpt-5.6-sol`。
+DSH Web 输入框通过粘贴事件接收图片。rc.2 优先由原生多模态模型处理；模型目录是否声明
+`input: [text, image]` 由 DSH profile 决定，业务插件不强制模型选择。只有显式设置
+`DSH_VISION_PATCH=` 时，`npm run dsh:dev` 才会应用仓库内的兼容 overlay，便于旧 profile 临时验证。
 
 已验证的 NewAPI 模型能力：
 
 | 模型 | 图片请求 | 用途 |
 | --- | --- | --- |
 | `claude-opus-5` | 通过 | 视觉备用 |
-| `gpt-5.6-sol` | 通过 | 视觉主力，复杂截图和表格（默认） |
-| `gpt-5.6-terra` | 通过 | 视觉备用/低延迟 |
+| `gpt-5.6-sol` | 通过（历史 NewAPI 验证） | 可选视觉路由 |
+| `gpt-5.6-terra` | 通过（历史 NewAPI 验证） | 可选视觉路由 |
 | `glm-5.2` | 不支持，服务端明确返回文本-only | 不进入视觉路由 |
 
 本地 NewAPI 兼容性还要求所有 OpenAI function 参数 Schema 显式带 `required` 数组；
@@ -115,6 +113,6 @@ DSH pi-ai 适配层已将省略字段规范化为 `required: []`，否则模型�
 4. 运行 `npm test`、`npm run check`、插件 typecheck/build 和 DSH Web smoke；
 5. 记录 DSH checkout、插件版本、provider/model 和测试 fixture 哈希。
 
-本切片最新验证：业务插件 `35/35` tests、typecheck、build 通过；主仓 `80/80` tests 和
-`npm run check` 通过；重启后的 DSH Web `3080` 返回 HTTP 200，Controller `4318` 返回
-`service/database: ready`。真实腾讯表 viewport 的视觉字段准确性仍属于用户体验验收，不计入上述 fixture 结果。
+本切片历史视觉验证仍保留作回归参考；当前 rc.2 兼容验证为业务插件 `193/193`、主仓 `131/131`，
+插件 typecheck/build、主仓 `npm run check` 通过；DSH Web `3090` 和工作台均返回 HTTP 200。
+真实腾讯表 viewport 的视觉字段准确性仍属于用户体验验收，不计入上述 fixture 结果。

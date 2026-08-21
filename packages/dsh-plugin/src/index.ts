@@ -37,6 +37,8 @@ import { registerBossWatchDashboardRoute } from './dashboard-route.js'
 import { registerBossWatchDashboardPageRoute } from './dashboard-page-route.js'
 import { LocalCandidateProfileService, SqliteCandidateProfileStore } from './candidate-profile.js'
 import { LocalKnowledgeGrowthService } from './knowledge-growth.js'
+import { LocalJobSourceRefreshScheduler } from './job-source-refresh-scheduler.js'
+import { LocalInterviewKnowledgeService } from './interview-note-knowledge.js'
 
 export const name = 'boss-watch-dsh-plugin'
 export const inject = ['tools', 'skills']
@@ -89,6 +91,10 @@ export function apply(ctx: Context): void {
       ? {}
       : { vaultRoot: process.env.BOSS_WATCH_OBSIDIAN_VAULT },
   )
+  const interviewKnowledge = new LocalInterviewKnowledgeService({
+    vaultRoot: process.env.BOSS_WATCH_OBSIDIAN_VAULT
+      ?? join(homedir(), 'Desktop', 'Obsidian-Knowledge-Base'),
+  })
   const gateA = resumeMatchStore === undefined || gateAStore === undefined
     ? undefined
     : new LocalGateAService({ matches: resumeMatchStore, approvals: gateAStore })
@@ -173,6 +179,18 @@ export function apply(ctx: Context): void {
         store: leadStore,
       })
     : undefined
+  const jobSourceRefreshScheduler = leadSource === undefined
+    ? undefined
+    : new LocalJobSourceRefreshScheduler({
+        source: leadSource,
+        ...parseRefreshInterval(process.env.BOSS_WATCH_SOURCE_REFRESH_INTERVAL_MINUTES) === undefined
+          ? {}
+          : { intervalMinutes: parseRefreshInterval(process.env.BOSS_WATCH_SOURCE_REFRESH_INTERVAL_MINUTES) },
+        query: { limit: 50 },
+      })
+  if (jobSourceRefreshScheduler !== undefined && process.env.BOSS_WATCH_SOURCE_REFRESH_ENABLED === '1') {
+    jobSourceRefreshScheduler.start()
+  }
   const feishuProjection = feishuStore === undefined
     ? undefined
     : new LocalFeishuProjectionService({
@@ -231,7 +249,7 @@ export function apply(ctx: Context): void {
   })
   ctx.effect(
     () => {
-      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch, recruitmentSource, recruitmentSourceStore, resumeMatchStore, recruitmentJd, gateA, applicationStatusClient, candidateProfile, knowledgeGrowth)
+      const disposeTools = registerBossWatchTools(ctx, source, browser, leadSource, leadStore, batchStore, followUpStore, importService, clipboardImportService, visualImportService, feishuProjection, jobWatch, jobWatchScheduler, jobDiff, applicationPreview, resumeStore, resumeImport, interviewNoteClient, resumeMatching, applicationFormPreview, progressSignalClient, workspaceOverview, candidateBoard, bossJobSearch, recruitmentSource, recruitmentSourceStore, resumeMatchStore, recruitmentJd, gateA, applicationStatusClient, candidateProfile, knowledgeGrowth, jobSourceRefreshScheduler, interviewKnowledge)
       const disposeSkill = registerBossWatchSkill(ctx)
       return () => {
         disposeSkill()
@@ -282,6 +300,8 @@ export { LocalOfficialJobCaptureClient } from './official-job-client.js'
 export { LocalRecruitmentJdService } from './recruitment-jd.js'
 export { LocalGateAService, SqliteGateAStore } from './gate-a.js'
 export { LocalApplicationStatusClient } from './application-status-client.js'
+export { LocalJobSourceRefreshScheduler } from './job-source-refresh-scheduler.js'
+export { LocalInterviewKnowledgeService } from './interview-note-knowledge.js'
 export { registerBossWatchDashboardRoute } from './dashboard-route.js'
 export { registerBossWatchDashboardPageRoute } from './dashboard-page-route.js'
 export type * from './dashboard-contract.js'
@@ -306,6 +326,8 @@ export type * from './recruitment-source.js'
 export type * from './recruitment-jd.js'
 export type * from './gate-a.js'
 export type * from './application-status-client.js'
+export type * from './job-source-refresh-scheduler.js'
+export type * from './interview-note-knowledge.js'
 
 async function hashVisionAttachment(reference: string, attachments: AttachmentReader): Promise<string> {
   const parsed = decodeVisionAttachmentReference(reference)
@@ -342,4 +364,11 @@ function decodeVisionAttachmentReference(reference: string): Parameters<Attachme
   } catch {
     return undefined
   }
+}
+
+function parseRefreshInterval(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim().length === 0) return undefined
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed)) throw new Error('invalid_job_source_refresh_interval')
+  return parsed
 }
