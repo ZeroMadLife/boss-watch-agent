@@ -98,6 +98,15 @@ test('serves a bounded read-only dashboard snapshot through the DSH host route',
     readOnly: true,
     overview,
     candidates,
+    todayRecommendations: {
+      strategyVersion: 'today-recommendations-v1',
+      generatedAt: '2026-08-19T04:00:00.000Z',
+      readOnly: true,
+      evaluatedCount: 1,
+      recommendedCount: 0,
+      considerCount: 0,
+      items: [],
+    },
     resumeCenter: {
       versions: [{
         resumeVersionId: 'resume-version:fixture', current: true, mediaType: 'application/pdf', byteSize: 1024,

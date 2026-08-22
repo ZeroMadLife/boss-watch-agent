@@ -84,10 +84,10 @@ test('serves a user-facing personal job board without interpolating job facts', 
   assert.match(response.body(), /匹配度中等，先查看缺口/u)
   assert.match(response.body(), /匹配度较低，暂不优先/u)
   assert.match(response.body(), /准备投递/u)
-  assert.match(response.body(), /打开投递入口/u)
+  assert.match(response.body(), /人工打开官网\/ATS/u)
   assert.match(response.body(), /boss-watch:dashboard-draft/u)
   assert.match(response.body(), /重新读取/u)
-  assert.match(response.body(), /打开投递入口/u)
+  assert.match(response.body(), /人工打开官网\/ATS/u)
   assert.match(response.body(), /skip-link/u)
   assert.doesNotMatch(visibleMarkup, /候选|只读派生|当前可见事实|contract|projection|source_only|evidence kind|Agent 建议|JOB BOARD|个人求职作战看板/u)
   assert.doesNotMatch(response.body(), /开始自动投递|一键自动投递/u)
@@ -159,6 +159,25 @@ test('offers first-screen match shortcuts, an inline empty-state recovery, and a
   assert.match(response.body(), /class="mobile-dsh-label"/u)
   assert.match(response.body(), /@media \(max-width: 430px\)[\s\S]*\.runtime-label \{ position: absolute/u)
   assert.doesNotMatch(response.body(), /\.header-actions \.button\.primary \{ display: none; \}/u)
+})
+
+test('renders the shared today shortlist as a compact first-screen decision path', () => {
+  const response = captureResponse()
+  handleBossWatchDashboardPageRequest({ method: 'GET' }, response.value)
+
+  assert.match(response.body(), /id="today-shortlist"/u)
+  assert.match(response.body(), /今日推荐/u)
+  assert.match(response.body(), /function renderTodayRecommendations\(\)/u)
+  assert.match(response.body(), /snapshot\.todayRecommendations\.items/u)
+  assert.match(response.body(), /function recommendationStatus\(recommendation\)/u)
+  assert.match(response.body(), /recommendation\.tier === 'consider'/u)
+  assert.match(response.body(), /recommendation\.readiness === 'verified_url_pending'/u)
+  assert.match(response.body(), /今天可投/u)
+  assert.match(response.body(), /待你确认/u)
+  assert.match(response.body(), /待补入口/u)
+  assert.match(response.body(), /人工打开官网\/ATS/u)
+  assert.match(response.body(), /delivery: 'draft_only', autoSubmit: false/u)
+  assert.doesNotMatch(response.body(), /自动提交|一键投递/u)
 })
 
 test('offers a draft-only multi-select queue for jobs ready to prepare', () => {

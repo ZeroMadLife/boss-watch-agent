@@ -277,7 +277,12 @@ test('joins only explicitly bound recruitment source, application, match, and Fe
     sourceRecordId: 'bound-fixture',
     company: '虚构云图科技',
     role: '后端工程师',
+    city: '上海',
+    cohort: '2027届',
+    recruitmentType: '秋招',
+    deadline: '2026-09-30',
     officialApplyUrl: 'https://careers.example.invalid/jobs/backend-fixture',
+    sourceUpdatedAt: '2026-08-18T00:00:00.000Z',
     fetchedAt: '2026-08-19T00:55:00.000Z',
     rawRef: 'company-career-site://bound-fixture',
     contentHash: 'e'.repeat(64),
@@ -337,6 +342,11 @@ test('joins only explicitly bound recruitment source, application, match, and Fe
   assert.equal(board[0]?.recruitmentSourceId, recruitmentSource.sourceId)
   assert.equal(board[0]?.channelUrl, recruitmentSource.channelUrl)
   assert.equal(board[0]?.officialApplyUrl, lead.officialApplyUrl)
+  assert.equal(board[0]?.city, lead.city)
+  assert.equal(board[0]?.cohort, lead.cohort)
+  assert.equal(board[0]?.recruitmentType, lead.recruitmentType)
+  assert.equal(board[0]?.deadline, lead.deadline)
+  assert.equal(board[0]?.sourceUpdatedAt, lead.sourceUpdatedAt)
   assert.equal(board[0]?.referralCode, 'DEMO27')
   assert.deepEqual(board[0]?.gateA, {
     gateAId: GATE_A_APPROVAL.gateAId,

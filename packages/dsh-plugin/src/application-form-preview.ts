@@ -155,6 +155,9 @@ export type ApplicationFormAutofillOutcome =
       readonly filledCount: number;
       readonly unresolvedCount: number;
       readonly alreadyPresentCount: number;
+      readonly needsUserInputCount: number;
+      readonly sensitiveCount: number;
+      readonly unknownCount: number;
       readonly uploadedResume: boolean;
       readonly manualReviewRequired: true;
       readonly submitted: false;
@@ -542,6 +545,9 @@ export class LocalApplicationFormPreviewService {
       filledCount: result.filledCount,
       unresolvedCount: preview.preview.summary.manualCount,
       alreadyPresentCount: preview.preview.summary.alreadyPresentCount,
+      needsUserInputCount: preview.preview.summary.needsUserInputCount,
+      sensitiveCount: preview.preview.summary.sensitiveCount,
+      unknownCount: preview.preview.summary.unknownCount,
       uploadedResume: result.uploadedResume,
       manualReviewRequired: true,
       submitted: false,

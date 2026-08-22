@@ -1,5 +1,6 @@
 import type { CandidateBoardItem } from './candidate-board.js'
 import type { WorkspaceOverview } from './workspace-overview.js'
+import type { TodayRecommendations } from './today-recommendations.js'
 
 export type DashboardResumeParseStatus = 'parsed_for_matching' | 'not_yet_parsed_for_matching'
 
@@ -36,6 +37,7 @@ export interface BossWatchDashboardSnapshot {
   readonly readOnly: true
   readonly overview: WorkspaceOverview
   readonly candidates: readonly CandidateBoardItem[]
+  readonly todayRecommendations: TodayRecommendations
   readonly resumeCenter: DashboardResumeCenter
   readonly count: number
 }

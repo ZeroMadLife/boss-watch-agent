@@ -62,6 +62,10 @@ const snapshot = {
   status: 'ok',
   generatedAt: '2026-08-19T04:00:00.000Z',
   readOnly: true,
+  todayRecommendations: {
+    strategyVersion: 'today-recommendations-v1', generatedAt: '2026-08-19T04:00:00.000Z', readOnly: true,
+    evaluatedCount: 1, recommendedCount: 0, considerCount: 0, items: [],
+  },
   overview: {
     phase: 'match_ready',
     databaseReady: true,

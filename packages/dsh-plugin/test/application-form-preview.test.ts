@@ -249,6 +249,10 @@ test("fills the current page in one authorized operation and returns only a comp
   assert.equal(result.role, "Agent 平台工程师");
   assert.equal(result.filledCount, 9);
   assert.equal(result.unresolvedCount, 4);
+  assert.equal(result.needsUserInputCount, 1);
+  assert.equal(result.sensitiveCount, 4);
+  assert.equal(result.unknownCount, 1);
+  assert.equal(result.alreadyPresentCount, 0);
   assert.equal(result.submitted, false);
   assert.equal(result.nextAction, "review_before_submit");
   assert.match(result.planContentHash, /^[a-f0-9]{64}$/u);
@@ -594,7 +598,15 @@ test("exposes preview and one-shot confirmed local fill through dedicated DSH to
     if (autofillContent?.type !== "text") throw new Error("expected_text_tool_result");
     const autofillPayload = JSON.parse(autofillContent.text) as {
       status: string;
-      result: { company: string; role: string; filledCount: number; submitted: boolean };
+      result: {
+        company: string;
+        role: string;
+        filledCount: number;
+        needsUserInputCount: number;
+        sensitiveCount: number;
+        unknownCount: number;
+        submitted: boolean;
+      };
     };
     assert.equal(autofillPayload.status, "ok");
     assert.deepEqual(
@@ -602,12 +614,18 @@ test("exposes preview and one-shot confirmed local fill through dedicated DSH to
         company: autofillPayload.result.company,
         role: autofillPayload.result.role,
         filledCount: autofillPayload.result.filledCount,
+        needsUserInputCount: autofillPayload.result.needsUserInputCount,
+        sensitiveCount: autofillPayload.result.sensitiveCount,
+        unknownCount: autofillPayload.result.unknownCount,
         submitted: autofillPayload.result.submitted,
       },
       {
         company: "虚构科技",
         role: "Agent 平台工程师",
         filledCount: 9,
+        needsUserInputCount: 1,
+        sensitiveCount: 4,
+        unknownCount: 1,
         submitted: false,
       },
     );

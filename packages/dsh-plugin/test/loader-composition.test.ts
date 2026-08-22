@@ -128,6 +128,7 @@ test('registers bounded tools through a real Cordis Loader composition', async (
       'boss_watch_source_refresh',
       'boss_watch_source_refresh_status',
       'boss_watch_source_status',
+      'boss_watch_today_recommendations',
       'boss_watch_watch_create',
       'boss_watch_watch_list',
       'boss_watch_watch_poll',
@@ -144,6 +145,9 @@ test('registers bounded tools through a real Cordis Loader composition', async (
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_job_list/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_workspace_overview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_candidate_board/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_today_recommendations/u)
+    assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /今天推荐哪几个/u)
+    assert.doesNotMatch((await context.skills.get('boss-watch-job-search'))?.content ?? '', /候选人面板|本地候选/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_discover_jobs/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_boss_search_preview/u)
     assert.match((await context.skills.get('boss-watch-job-search'))?.content ?? '', /boss_watch_boss_search_run/u)

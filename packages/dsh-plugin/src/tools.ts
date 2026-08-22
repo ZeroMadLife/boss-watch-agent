@@ -18,6 +18,7 @@ import type {
 } from "./application-status-client.js";
 import type { LocalBossJobSearchService } from "./boss-job-search.js";
 import type { LocalCandidateBoardService } from "./candidate-board.js";
+import { deriveTodayRecommendations } from "./today-recommendations.js";
 import type { LocalCandidateProfileService } from "./candidate-profile.js";
 import type { BossWatchBrowserController, BossWatchDataSource } from "./domain.js";
 import type { LocalGateAService } from "./gate-a.js";
@@ -470,6 +471,49 @@ const CANDIDATE_BOARD_ITEM = {
       ],
     },
     nextTool: { type: "string", required: true },
+  },
+} as const;
+
+const TODAY_RECOMMENDATION = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    rank: { type: "integer", required: true },
+    candidateId: { type: "string", required: true },
+    company: { type: "string", required: true },
+    role: { type: "string", required: true },
+    city: { type: "string" },
+    deadline: { type: "string" },
+    tier: { type: "string", required: true, enum: ["recommended", "consider"] },
+    readiness: {
+      type: "string",
+      required: true,
+      enum: ["ready_to_apply", "gate_a_pending", "verified_url_pending"],
+    },
+    score: { type: "integer", required: true },
+    matchLevel: { type: "string", required: true, enum: ["strong", "moderate"] },
+    matchStrategyVersion: { type: "string", required: true },
+    matchedHighlights: { type: "array", items: { type: "string" }, required: true },
+    gaps: { type: "array", items: { type: "string" }, required: true },
+    whyToday: { type: "string", required: true },
+    recommendationReason: { type: "string", required: true },
+    officialApplyUrl: { type: "string" },
+    action: {
+      type: "object",
+      additionalProperties: false,
+      required: true,
+      properties: {
+        mode: { type: "string", required: true, enum: ["manual_open_verified_url", "draft_only"] },
+        label: { type: "string", required: true, enum: ["人工打开官网/ATS", "确认值得投", "补投递入口"] },
+        nextTool: {
+          type: "string",
+          required: true,
+          enum: ["boss_watch_apply_preview", "boss_watch_gate_a_confirm", "boss_watch_lead_list"],
+        },
+        requiresHuman: { type: "boolean", required: true },
+        externalEffect: { type: "string", required: true, enum: ["none"] },
+      },
+    },
   },
 } as const;
 
@@ -1213,6 +1257,77 @@ export function registerBossWatchTools(
               candidates: [],
               count: 0,
               message: stableError(error),
+            };
+          }
+        },
+      }),
+    ),
+    ctx.tools.register(
+      defineTool({
+        name: "boss_watch_today_recommendations",
+        description:
+          "Answer questions such as '今天推荐哪几个' from the local job board. Returns at most five deterministic, privacy-bounded strong or moderate matches with readiness, reasons, gaps, deadline and a manual next step. Read-only: never refreshes sources, opens pages, fills forms, submits applications, sends messages or writes Feishu.",
+        parameters: {
+          limit: { type: "integer", description: "Maximum recommendations to return, from 1 to 5. Defaults to 5." },
+        },
+        output: {
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              status: STATUS,
+              strategyVersion: { type: "string" },
+              generatedAt: { type: "string" },
+              readOnly: { type: "boolean" },
+              evaluatedCount: { type: "integer", required: true },
+              recommendedCount: { type: "integer", required: true },
+              considerCount: { type: "integer", required: true },
+              recommendations: { type: "array", items: TODAY_RECOMMENDATION, required: true },
+              message: { type: "string" },
+            },
+          },
+          render: renderJson,
+        },
+        async execute(args) {
+          if (candidateBoard === undefined) {
+            return {
+              status: "source_unavailable" as const,
+              evaluatedCount: 0,
+              recommendedCount: 0,
+              considerCount: 0,
+              recommendations: [],
+              message: "candidate_board_unavailable",
+            };
+          }
+          try {
+            const candidates = await candidateBoard.list({ limit: 100 });
+            const result = deriveTodayRecommendations(candidates, {
+              ...numberField(args.limit, "limit"),
+            });
+            return {
+              status: "ok" as const,
+              strategyVersion: result.strategyVersion,
+              generatedAt: result.generatedAt,
+              readOnly: result.readOnly,
+              evaluatedCount: result.evaluatedCount,
+              recommendedCount: result.recommendedCount,
+              considerCount: result.considerCount,
+              recommendations: result.items.map((item) => ({
+                ...item,
+                matchedHighlights: [...item.matchedHighlights],
+                gaps: [...item.gaps],
+                action: { ...item.action },
+              })),
+            };
+          } catch (error: unknown) {
+            const message = stableError(error);
+            return {
+              status: message === "invalid_today_recommendation_limit" ? "invalid_request" as const : "source_unavailable" as const,
+              evaluatedCount: 0,
+              recommendedCount: 0,
+              considerCount: 0,
+              recommendations: [],
+              message,
             };
           }
         },

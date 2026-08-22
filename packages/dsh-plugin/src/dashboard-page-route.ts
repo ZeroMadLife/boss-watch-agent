@@ -104,6 +104,23 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
     .resume-version-name { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: var(--text); font-size: 11px; font-weight: 680; }
     .resume-version-meta { margin-top: 5px; color: var(--faint); font-size: 10px; line-height: 1.45; }
     .resume-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+    .today-band { margin-bottom: 14px; border: 1px solid var(--border); border-left: 3px solid #3b8657; border-radius: var(--radius); background: var(--surface); }
+    .today-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 9px 13px; border-bottom: 1px solid var(--border-soft); }
+    .today-title { margin: 0; font-size: 13px; font-weight: 720; }
+    .today-meta { color: var(--muted); font-size: 10px; }
+    .today-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    .today-item { min-width: 0; padding: 11px 12px; border-right: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
+    .today-item:last-child { border-right: 0; }
+    .today-item-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .today-rank { color: var(--green); font-size: 10px; font-weight: 750; }
+    .today-company { min-width: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+    .today-role { margin-top: 5px; color: var(--text); font-size: 12px; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
+    .today-score { margin-top: 5px; color: var(--blue); font-size: 11px; font-weight: 680; }
+    .today-reason { min-height: 34px; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.55; }
+    .today-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+    .today-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+    .today-actions .button { min-height: 30px; padding: 0 8px; font-size: 10px; }
+    .today-empty { padding: 18px 13px; color: var(--muted); font-size: 11px; line-height: 1.55; }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 8px; margin-bottom: 14px; }
     .metric { width: 100%; min-width: 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); cursor: pointer; text-align: left; }
     .metric:hover { border-color: #46586b; background: var(--surface-2); }
@@ -201,6 +218,8 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
       .caption { font-size: 11px; }
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
       .resume-center { grid-template-columns: minmax(0, 1fr); padding: 11px; }
+      .today-list { grid-template-columns: 1fr; }
+      .today-item { border-right: 0; }
       .resume-actions { grid-column: 1; }
       .metric { padding: 10px; }
       .filters { grid-template-columns: 1fr 1fr; padding: 9px; }
@@ -254,6 +273,10 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
       <div class="panel" id="loading-panel" aria-live="polite"><div class="loading"><div class="loading-bars"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>正在读取岗位信息</div></div>
       <div class="panel hidden" id="error-panel" role="alert"><div class="error"><strong>岗位看板加载失败</strong><div id="error-message"></div><button class="button" id="retry" type="button">重新读取</button></div></div>
       <section class="hidden" id="board-content" aria-label="岗位池">
+        <section class="today-band" id="today-shortlist" aria-labelledby="today-shortlist-title">
+          <div class="today-header"><div><h1 class="today-title" id="today-shortlist-title">今日推荐</h1><div class="today-meta" id="today-shortlist-meta">等待匹配结果</div></div><span class="badge">最多 5 个</span></div>
+          <div class="today-list" id="today-shortlist-list"></div>
+        </section>
         <section class="resume-center" aria-labelledby="resume-center-title">
           <div class="resume-heading"><h1 class="resume-title" id="resume-center-title">简历中心</h1><div class="resume-meta" id="resume-center-meta">等待简历信息</div></div>
           <div class="resume-list" id="resume-list" aria-label="简历版本"></div>
@@ -459,7 +482,7 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
       async function useResumeDraft(kind) { await deliverDraft(buildResumeDraft(kind), '简历中心草稿已复制，请发送前复核'); }
       function draftButton(candidate) { const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.textContent = actionLabel(candidate); button.addEventListener('click', (event) => { event.stopPropagation(); void useDraft(candidate); }); return button; }
       function queueButton(candidate) { const availability = queueAvailability(candidate); const button = document.createElement('button'); button.type = 'button'; button.className = 'button'; button.disabled = !availability.selectable; button.textContent = availability.selectable ? (queueSelection.has(candidate.candidateId) ? '移出待投递' : '加入待投递') : availability.reason; button.addEventListener('click', () => { if (queueSelection.has(candidate.candidateId)) queueSelection.delete(candidate.candidateId); else queueSelection.add(candidate.candidateId); renderJobs(); renderDetail(); }); return button; }
-      function verifiedLink(candidate, url) { const link = document.createElement('a'); link.className = 'button primary'; link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '打开投递入口'; link.setAttribute('aria-label', '打开投递入口：' + candidate.company + ' ' + text(candidate.role, '待选择岗位')); link.addEventListener('click', (event) => event.stopPropagation()); return link; }
+      function verifiedLink(candidate, url) { const link = document.createElement('a'); link.className = 'button primary'; link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '人工打开官网/ATS'; link.setAttribute('aria-label', '人工打开官网或 ATS：' + candidate.company + ' ' + text(candidate.role, '待选择岗位')); link.addEventListener('click', (event) => event.stopPropagation()); return link; }
       function filteredJobs() {
         const query = state.query.trim().toLowerCase();
         const rows = boardPool().filter((candidate) => {
@@ -502,6 +525,32 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
         const review = rows.filter((candidate) => displayProfile(candidate).worth === 'review').length;
         const pending = rows.filter((candidate) => displayProfile(candidate).worth === 'pending').length;
         $('metrics').replaceChildren(metric('全部岗位', rows.length, 'all'), metric('值得投', recommended, 'strong'), metric('可考虑', review, 'moderate'), metric('待评估', pending, 'pending'));
+      }
+      function focusRecommendation(candidateId) {
+        state.query = ''; state.match = 'all'; state.application = 'all'; state.companyCategory = 'all'; state.roleDirection = 'all'; state.sort = 'match'; state.selected = candidateId; state.pageNeedsNormalization = false;
+        const index = filteredJobs().findIndex((candidate) => candidate.candidateId === candidateId); state.page = index < 0 ? 1 : Math.floor(index / PAGE_SIZE) + 1;
+        restoreControls(); syncUrl('replace'); renderMetrics(); renderJobs(); renderDetail(); $('detail-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      function recommendationStatus(recommendation) {
+        if (recommendation.tier === 'consider') return ['可考虑', 'info'];
+        if (recommendation.readiness === 'ready_to_apply') return ['今天可投', 'good'];
+        if (recommendation.readiness === 'verified_url_pending') return ['待补入口', 'pending'];
+        return ['待你确认', 'pending'];
+      }
+      function renderTodayRecommendations() {
+        const snapshot = state.snapshot; const list = $('today-shortlist-list'); list.replaceChildren();
+        const items = snapshot.todayRecommendations.items;
+        setText($('today-shortlist-meta'), snapshot.todayRecommendations.recommendedCount + ' 个值得投 · ' + snapshot.todayRecommendations.considerCount + ' 个可考虑 · ' + formatDateTime(snapshot.todayRecommendations.generatedAt));
+        if (items.length === 0) { const empty = document.createElement('div'); empty.className = 'today-empty'; empty.textContent = '暂时没有证据充分的推荐。先补全职位描述或完成本地匹配，不会为了凑数推荐岗位。'; list.append(empty); return; }
+        items.forEach((recommendation) => {
+          const candidate = boardPool().find((item) => item.candidateId === recommendation.candidateId); const item = document.createElement('article'); item.className = 'today-item';
+          const top = document.createElement('div'); top.className = 'today-item-top'; const identity = document.createElement('div'); identity.className = 'today-company'; identity.textContent = recommendation.company + (recommendation.city ? ' · ' + recommendation.city : ''); const status = recommendationStatus(recommendation); top.append(identity, badge(status[0], status[1]));
+          const role = document.createElement('div'); role.className = 'today-role'; role.textContent = recommendation.role; const score = document.createElement('div'); score.className = 'today-score'; score.textContent = '#' + recommendation.rank + ' · ' + recommendation.score + ' 分' + (recommendation.deadline ? ' · 截止 ' + formatDate(recommendation.deadline) : '');
+          const reason = document.createElement('div'); reason.className = 'today-reason'; reason.textContent = recommendation.whyToday + '。' + recommendation.recommendationReason;
+          const tags = document.createElement('div'); tags.className = 'today-tags'; recommendation.matchedHighlights.slice(0, 3).forEach((value) => tags.append(badge(capabilityLabels[value] || value, 'good'))); if (recommendation.gaps.length > 0) tags.append(badge('需复核 ' + recommendation.gaps.length + ' 项', 'pending'));
+          const actions = document.createElement('div'); actions.className = 'today-actions'; if (recommendation.action.mode === 'manual_open_verified_url' && candidate) { const url = safeUrl(recommendation.officialApplyUrl); if (url) actions.append(verifiedLink(candidate, url)); } else if (candidate) { const prepare = document.createElement('button'); prepare.type = 'button'; prepare.className = 'button primary'; prepare.textContent = recommendation.action.label; prepare.addEventListener('click', () => { void useDraft(candidate); }); actions.append(prepare); } const detail = document.createElement('button'); detail.type = 'button'; detail.className = 'button'; detail.textContent = '查看岗位'; detail.addEventListener('click', () => focusRecommendation(recommendation.candidateId)); actions.append(detail);
+          item.append(top, role, score, reason, tags, actions); list.append(item);
+        });
       }
       function resumeFormat(mediaType) {
         if (mediaType === 'application/pdf') return 'PDF';
@@ -566,8 +615,8 @@ export const DASHBOARD_PAGE_HTML = `<!doctype html>
       function restoreControls() { $('search').value = state.query; $('match-filter').value = state.match; $('application-filter').value = state.application; $('company-category-filter').value = state.companyCategory; $('role-direction-filter').value = state.roleDirection; $('sort').value = state.sort; }
       function resetPageAndSelection() { state.page = 1; state.pageNeedsNormalization = false; state.selected = null; syncUrl('replace'); renderMetrics(); renderJobs(); renderDetail(); }
       function clearFilters() { state.query = ''; state.match = 'all'; state.application = 'all'; state.companyCategory = 'all'; state.roleDirection = 'all'; state.sort = 'match'; restoreControls(); resetPageAndSelection(); }
-      function render(snapshot) { state.snapshot = snapshot; pruneQueueSelection(); $('loading-panel').classList.add('hidden'); $('error-panel').classList.add('hidden'); $('board-content').classList.remove('hidden'); renderResumeCenter(); renderMetrics(); renderJobs(); renderDetail(); restoreControls(); const guard = snapshot.overview.bossSearchGuard; updateRuntime(guard.guarded ? '岗位采集暂缓' : '岗位信息已更新', guard.guarded ? 'warn' : ''); }
-      async function load() { const refresh = $('refresh'); refresh.disabled = true; $('error-panel').classList.add('hidden'); if (!state.snapshot) $('loading-panel').classList.remove('hidden'); try { const response = await fetch(API, { method: 'GET', headers: { accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store' }); const payload = await response.json(); if (!response.ok || payload.status !== 'ok' || payload.readOnly !== true || !Array.isArray(payload.candidates) || !payload.resumeCenter || !Array.isArray(payload.resumeCenter.versions)) throw new Error(payload?.error?.code || 'dashboard_unavailable'); render(payload); } catch (error) { $('loading-panel').classList.add('hidden'); $('board-content').classList.add('hidden'); $('error-panel').classList.remove('hidden'); setText($('error-message'), error instanceof Error ? error.message : 'unknown_error'); updateRuntime('读取失败', 'error'); } finally { refresh.disabled = false; } }
+      function render(snapshot) { state.snapshot = snapshot; pruneQueueSelection(); $('loading-panel').classList.add('hidden'); $('error-panel').classList.add('hidden'); $('board-content').classList.remove('hidden'); renderTodayRecommendations(); renderResumeCenter(); renderMetrics(); renderJobs(); renderDetail(); restoreControls(); const guard = snapshot.overview.bossSearchGuard; updateRuntime(guard.guarded ? '岗位采集暂缓' : '岗位信息已更新', guard.guarded ? 'warn' : ''); }
+      async function load() { const refresh = $('refresh'); refresh.disabled = true; $('error-panel').classList.add('hidden'); if (!state.snapshot) $('loading-panel').classList.remove('hidden'); try { const response = await fetch(API, { method: 'GET', headers: { accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store' }); const payload = await response.json(); if (!response.ok || payload.status !== 'ok' || payload.readOnly !== true || !Array.isArray(payload.candidates) || !payload.todayRecommendations || !Array.isArray(payload.todayRecommendations.items) || !payload.resumeCenter || !Array.isArray(payload.resumeCenter.versions)) throw new Error(payload?.error?.code || 'dashboard_unavailable'); render(payload); } catch (error) { $('loading-panel').classList.add('hidden'); $('board-content').classList.add('hidden'); $('error-panel').classList.remove('hidden'); setText($('error-message'), error instanceof Error ? error.message : 'unknown_error'); updateRuntime('读取失败', 'error'); } finally { refresh.disabled = false; } }
       $('refresh').addEventListener('click', () => { void load(); }); $('retry').addEventListener('click', () => { void load(); });
       $('search').addEventListener('input', (event) => { state.query = event.target.value.slice(0, 120); resetPageAndSelection(); });
       $('match-filter').addEventListener('change', (event) => { state.match = valid(event.target.value, VALID_MATCHES, 'all'); resetPageAndSelection(); });

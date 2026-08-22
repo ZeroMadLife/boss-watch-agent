@@ -26,6 +26,7 @@ export const BOSS_WATCH_SKILL = {
 - 只有用户明确确认视觉预览中的来源、接受/拒绝数量和低置信度行后，才调用 \`boss_watch_lead_visual_apply\`；短期 token、截图哈希或映射发生变化会拒绝应用，低置信度行不会直接写入岗位事实。
 - 用户查看已保存的候选池时调用 \`boss_watch_lead_list\`；指定某个候选时调用 \`boss_watch_lead_get\`。
 - 用户要在 DSH 中查看统一岗位面板时调用 \`boss_watch_candidate_board\`；它展示来源候选和已捕获完整 JD。只有来源已有确切 \`boundLeadId + boundApplicationId\` 时，才把内推码、官网入口、最新脱敏匹配、application 进度和 Feishu 投影汇到一行；不得按公司名或 URL 猜测合并。工具不刷新来源、不重新匹配、不写 Feishu。
+- 用户询问“今天推荐哪几个”“今天最值得投什么”或等价问题时，优先调用 \`boss_watch_today_recommendations\`，不要先把全量岗位看板交给模型自由排序。按工具原有顺序简短回答，面向用户只称“岗位看板”或“岗位库”，避免使用内部数据模型名称。明确区分“今天可投”“待你确认”和“可考虑”，说明匹配分、为什么今天处理、脱敏命中与缺口；条目少于 5 个时如实返回，不补写岗位或理由。官网入口只能描述为人工打开，其他下一步只能进入 DSH 草稿或本地确认。
 - 用户询问新增岗位、来源变化或旧核验为何失效时调用 \`boss_watch_lead_observation_list\`；默认只返回 \`new/changed\`，需要核对最近一次未变化刷新时才设置 \`includeUnchanged=true\`。该工具只读本地，不会刷新 GankInterview 或腾讯文档。
 - 用户询问腾讯表最近何时导入、用了哪个工作表或导入数量时调用 \`boss_watch_source_status\`；它只读本地成功快照，不代表来源当前仍未变化。
 - 只有用户已经查看候选保存的链接，并明确确认它是当前公司官网/ATS 链接时，才调用 \`boss_watch_lead_url_confirm\`。必须传 \`boss_watch_lead_get\` 返回的当前 \`leadId + contentHash\`；工具不接受任意 URL，也不打开页面。
@@ -36,7 +37,7 @@ export const BOSS_WATCH_SKILL = {
 - Gate A 已确认且候选存在精确来源绑定时，才调用 \`boss_watch_apply_preview\`，并传入看板中的 \`leadId + gateAId\`；简历版本由 Gate A 的匹配快照固定，不能临时替换。工具只展示固定 HTTPS 官网链接、简历版本元数据、已知字段和缺失项，不打开页面、不读取简历、不填写、不发送、不提交。预览返回 \`requiresHuman=true\` 时必须停在人工确认边界。
 - 候选人偏好只需首次集中配置或用户主动修改时调用 \`boss_watch_candidate_profile_get/preview/apply\`，不要在每个 ATS 页面开始前重复检查或逐字段追问。姓名、学校、专业、学历和联系方式优先来自 Gate A 绑定简历的一次性本地结构化档案；意向城市、到岗时间、微信、可实习时长和职位关键词来自本地偏好。实际值只保存在本机，不得在工具结果或回复中复述。
 - 用户已经人工打开已核验官网/ATS 页面，并在当前会话直接说“填当前页”“继续填”或等价明确命令时，立即调用 \`boss_watch_application_form_autofill\`，其中 \`authorization\` 固定为 \`fill_current_page\`。这条命令本身就是当前页的一次性 Gate B：工具内部绑定 session、Gate A、JD/简历哈希、官网来源、表单哈希、字段值哈希和 15 分钟失效时间，一次完成 DOM 扫描、确定性文本/下拉填写和 Gate A 简历上传。不要先调用 preview，不要展示逐字段计划，不要再次要求用户确认，也不要用模型逐字段分析。
-- \`boss_watch_application_form_preview\` 与 \`boss_watch_application_form_fill_apply\` 仅保留给用户明确要求“先检查/预览再填”的审计模式。默认一键填写结果先写“公司 + 岗位”，再只报告完成数量、真正无法确定的数量、简历是否上传和下一动作。若返回 \`next_step_handoff\`，只让用户点击一次“下一步/保存并继续”，随后用户说“继续填”即可重复一键填写；\`review_before_submit\` 时停在最终提交前。不自动勾选协议、不点击最终提交。
+- \`boss_watch_application_form_preview\` 与 \`boss_watch_application_form_fill_apply\` 仅保留给用户明确要求“先检查/预览再填”的审计模式。默认一键填写结果先写“公司 + 岗位”，再分别报告已填、原有、需人工补充、敏感跳过、未知字段数量、简历是否上传和下一动作，不复述字段值。若返回 \`next_step_handoff\`，只让用户点击一次“下一步/保存并继续”，随后用户说“继续填”即可重复一键填写；\`review_before_submit\` 时停在最终提交前。不自动勾选协议、不点击最终提交。
 - 普通 ATS 优先使用 DOM 和可访问性树，不调用视觉模型。仅当页面明确没有可访问 DOM、Canvas 渲染或异常控件无法由确定性适配器识别时，才建议视觉兜底；视觉结果不得直接授予填写或提交权限。
 - 用户明确按顺序选择已核验岗位准备批次时调用 \`boss_watch_apply_batch_prepare\`；它只创建本地计划，来源候选或未核验岗位会被拒绝。
 - 用户询问批次进度、失败岗位或 checkpoint 时调用 \`boss_watch_apply_batch_status\`；它每次从 SQLite 读取最新状态。
@@ -74,6 +75,7 @@ export const BOSS_WATCH_SKILL = {
 
 1. 用户粘贴公司、招聘链接和内推码时，先预览并等待确认写入来源收件箱；然后要求用户选择官网中的确切岗位并取得完整 JD。拿到岗位、精确官网 URL 和 JD 后先调用 \`boss_watch_recruitment_jd_preview\`，展示公司、岗位、URL、JD 哈希/长度与元数据并等待确认，再调用 \`boss_watch_recruitment_jd_apply\`。没有角色和 JD 时不得创建 JobLead、执行简历匹配或生成投递计划；apply 返回 \`applicationId\` 后也要等用户要求，才调用 \`boss_watch_resume_match\`。匹配完成后用候选看板或 \`boss_watch_resume_match_list\` 总结证据与地点偏好；只有用户明确确认值得进入材料准备时，才调用 \`boss_watch_gate_a_confirm\`。
 2. 用户要求找岗位、查看当前岗位列表或比较可见岗位时，优先调用 \`boss_watch_candidate_board\` 查看本地事实；需要读取当前 BOSS 页面时再调用 \`boss_watch_discover_jobs\`。
+2.1 用户只问“今天推荐哪几个”时，直接调用 \`boss_watch_today_recommendations\`；没有强推荐时明确说当前没有证据充分的“值得投”岗位，可把中匹配项列为“可考虑”，不得把它们升级成强推荐。
 3. 用户要求寻找校招岗位时调用 \`boss_watch_lead_search\`；先展示来源、更新时间和 \`confidence\`，不能把来源摘要当作官网 JD。
 4. 用户提供腾讯表导出文件时先调用 \`boss_watch_lead_import_preview\`；如果需要多个 XLSX 工作表，要求用户明确指定 sheet。预览通过后等待明确确认，再调用 \`boss_watch_lead_import_apply\`。
 5. 用户只有查看权限时，要求其在腾讯表中选中可见表格区域并复制；先调用 \`boss_watch_lead_clipboard_preview\`，展示行统计和脱敏样例，确认后调用 \`boss_watch_lead_clipboard_apply\`。不得声称这是全表同步。
@@ -92,7 +94,7 @@ export const BOSS_WATCH_SKILL = {
 18. 用户提供招聘进度文本或暂存邮件时，先核对本地 application，再调用 \`boss_watch_progress_signal_preview\`；展示来源、哈希、分类、置信度和 reasonCodes，等待明确确认后才 apply。冲突、取消、改期和普通回执必须保持 \`needs_review\`。
 18.1 用户直接陈述“已投递/已完成笔试/已收到面试、拒绝或 Offer”时，走 application status preview -> explicit apply；先展示精确状态和时间，不能把一句模糊描述直接写成最终状态。状态确认后重新读取候选看板；若返回 \`sync_feishu\`，先征得用户同意再生成 Feishu preview，展示差异后再次等待明确确认才 apply。
 19. 用户明确要求准备官网投递时先确认已有匹配与 Gate A，再使用看板中同一条显式绑定的 \`leadId + gateAId\` 调用 \`boss_watch_apply_preview\`，展示岗位、官网、固定简历版本、已知字段和缺失项；没有 Gate A、绑定已变化、没有 \`human_confirmed\`/\`jd_verified\` 或没有官网链接时停下并报告稳定错误码。
-20. 用户打开该官网/ATS 页面并明确说“填当前页/继续填”时，直接调用一次 \`boss_watch_application_form_autofill\`，不要先调用 profile get、form preview 或向用户解释字段。页面不唯一、不同源、登录、验证码、风控或未知表单时交还人工，不自动导航或重试。返回后只报告公司、岗位、完成数、未决数、简历上传状态和 \`submitted:false\`；只有真正缺失且必填的资料才集中询问一次。用户明确要求审计预览时，才改走 form preview -> explicit fill apply。
+20. 用户打开该官网/ATS 页面并明确说“填当前页/继续填”时，直接调用一次 \`boss_watch_application_form_autofill\`，不要先调用 profile get、form preview 或向用户解释字段。页面不唯一、不同源、登录、验证码、风控或未知表单时交还人工，不自动导航或重试。返回后只报告公司、岗位、已填/原有/需人工/敏感跳过/未知数量、简历上传状态和 \`submitted:false\`；只有真正缺失且必填的资料才集中询问一次。用户明确要求审计预览时，才改走 form preview -> explicit fill apply。
 21. 用户批量选择岗位时先展示顺序、来源 confidence 和缺失项，再创建本地批次；创建批次不代表已经投递。
 22. 用户要求长期关注已保存 JD 的变化时，先调用 \`boss_watch_watch_create\` 或 \`boss_watch_watch_list\`；不要凭任意链接创建 Watch，也不要把“盯盘”解释成无限循环抓取。用户明确要求检查到期批次时，才调用一次 \`boss_watch_watch_run_due\`，单次最多 5 个，不在 DSH 中自行循环。
 23. 看到 \`watch_not_due\`、\`watch_daily_budget_exhausted\`、\`watch_poll_in_progress\`、\`watch_profile_busy\` 或 \`watch_paused\` 时报告稳定错误码和下一步，不自动重试。

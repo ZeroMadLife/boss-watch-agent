@@ -6,6 +6,7 @@ import type { BossWatchDashboardSnapshot, DashboardResumeCenter } from './dashbo
 import type { ResumeMatchStore } from './resume-matching.js'
 import type { ResumeVersionStore } from './resume-version.js'
 import type { LocalWorkspaceOverviewService } from './workspace-overview.js'
+import { deriveTodayRecommendations } from './today-recommendations.js'
 
 export const BOSS_WATCH_DASHBOARD_PATH = '/boss-watch/api/v1/dashboard'
 const DASHBOARD_LIMIT = 100
@@ -49,12 +50,14 @@ export async function handleBossWatchDashboardRequest(
       options.candidateBoard?.list({ limit: DASHBOARD_LIMIT }) ?? Promise.resolve([]),
     ])
     const resumeCenter = buildResumeCenter(options)
+    const generatedAt = (options.now ?? (() => new Date()))()
     const snapshot: BossWatchDashboardSnapshot = {
       status: 'ok',
-      generatedAt: (options.now ?? (() => new Date()))().toISOString(),
+      generatedAt: generatedAt.toISOString(),
       readOnly: true,
       overview,
       candidates,
+      todayRecommendations: deriveTodayRecommendations(candidates, { limit: 5, now: generatedAt }),
       resumeCenter,
       count: candidates.length,
     }

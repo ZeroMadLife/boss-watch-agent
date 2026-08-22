@@ -166,8 +166,48 @@ function errorCode(value: unknown, status: number): string {
 function isDashboardSnapshot(value: unknown): value is BossWatchDashboardSnapshot {
   if (!isRecord(value) || value.status !== 'ok' || value.readOnly !== true) return false
   if (typeof value.generatedAt !== 'string' || !Number.isSafeInteger(value.count) || !Array.isArray(value.candidates)) return false
-  if (!isWorkspaceOverview(value.overview) || !isResumeCenter(value.resumeCenter) || value.count !== value.candidates.length) return false
+  if (!isWorkspaceOverview(value.overview) || !isTodayRecommendations(value.todayRecommendations) || !isResumeCenter(value.resumeCenter) || value.count !== value.candidates.length) return false
   return value.candidates.every(isCandidate)
+}
+
+function isTodayRecommendations(value: unknown): value is BossWatchDashboardSnapshot['todayRecommendations'] {
+  if (
+    !isRecord(value)
+    || value.strategyVersion !== 'today-recommendations-v1'
+    || typeof value.generatedAt !== 'string'
+    || value.readOnly !== true
+    || !Number.isSafeInteger(value.evaluatedCount)
+    || !Number.isSafeInteger(value.recommendedCount)
+    || !Number.isSafeInteger(value.considerCount)
+    || !Array.isArray(value.items)
+    || value.items.length > 5
+  ) return false
+  return value.items.every(item => isRecord(item)
+    && Number.isSafeInteger(item.rank)
+    && Number(item.rank) >= 1
+    && typeof item.candidateId === 'string'
+    && typeof item.company === 'string'
+    && typeof item.role === 'string'
+    && (item.tier === 'recommended' || item.tier === 'consider')
+    && (item.readiness === 'ready_to_apply' || item.readiness === 'gate_a_pending' || item.readiness === 'verified_url_pending')
+    && Number.isSafeInteger(item.score)
+    && (item.matchLevel === 'strong' || item.matchLevel === 'moderate')
+    && typeof item.matchStrategyVersion === 'string'
+    && Array.isArray(item.matchedHighlights)
+    && item.matchedHighlights.every(entry => typeof entry === 'string')
+    && Array.isArray(item.gaps)
+    && item.gaps.every(entry => typeof entry === 'string')
+    && typeof item.whyToday === 'string'
+    && typeof item.recommendationReason === 'string'
+    && optionalString(item.city)
+    && optionalString(item.deadline)
+    && optionalString(item.officialApplyUrl)
+    && isRecord(item.action)
+    && (item.action.mode === 'manual_open_verified_url' || item.action.mode === 'draft_only')
+    && typeof item.action.label === 'string'
+    && typeof item.action.nextTool === 'string'
+    && item.action.requiresHuman === true
+    && item.action.externalEffect === 'none')
 }
 
 function isResumeCenter(value: unknown): value is BossWatchDashboardSnapshot['resumeCenter'] {
